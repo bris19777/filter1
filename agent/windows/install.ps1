@@ -7,8 +7,8 @@
 # managed by the machine administrator (the parent).
 
 # ============================ EDIT THESE ============================
-$Server = "https://YOUR-SERVER-URL"   # the public URL of your control server
-$Token  = "CHANGE-ME"                 # must match AGENT_TOKEN on the server
+$Server = "https://bsd-filter1.fly.dev"   # the public URL of your control server
+$Token  = "PASTE-AGENT-TOKEN-HERE"        # must match AGENT_TOKEN on the server
 # ===================================================================
 
 $ErrorActionPreference = "Stop"
