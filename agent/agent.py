@@ -17,14 +17,16 @@ and is managed by the machine's administrator (the parent).
 """
 
 import argparse
-import ipaddress
+import os
 import platform
 import socket
 import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import urllib.request
+import uuid
 from urllib.parse import urlparse
 
 try:
@@ -38,6 +40,43 @@ POLL_SECONDS = 60          # how often to fetch config
 DNS_ASSERT_SECONDS = 30    # how often to re-assert the system DNS setting
 BLOCK_IP = "0.0.0.0"
 IS_WINDOWS = platform.system() == "Windows"
+
+
+def id_dir():
+    """Directory where the persistent machine id is stored."""
+    if IS_WINDOWS:
+        base = os.environ.get("ProgramData", r"C:\ProgramData")
+        return os.path.join(base, "filter1")
+    return os.path.join(os.path.expanduser("~"), ".filter1")
+
+
+def get_device_id():
+    """Return a stable machine id, generating and persisting one on first run."""
+    d = id_dir()
+    path = os.path.join(d, "device_id")
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                v = f.read().strip()
+            if v:
+                return v
+    except Exception:
+        pass
+    new_id = uuid.uuid4().hex[:16]
+    try:
+        os.makedirs(d, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(new_id)
+    except Exception as e:
+        print(f"[id] could not persist device id: {e}")
+    return new_id
+
+
+def device_name():
+    try:
+        return socket.gethostname()
+    except Exception:
+        return "pc"
 
 
 class State:
@@ -143,8 +182,14 @@ class Resolver(BaseResolver):
             return reply
 
 
-def poll_loop(state, token):
-    url = f"{state.server_url}/api/config?token={token}"
+def config_url(state, token, device_id, name):
+    q = urllib.parse.urlencode({
+        "token": token, "device_id": device_id, "name": name})
+    return f"{state.server_url}/api/config?{q}"
+
+
+def poll_loop(state, token, device_id, name):
+    url = config_url(state, token, device_id, name)
     while True:
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "filter1"})
@@ -152,8 +197,8 @@ def poll_loop(state, token):
                 import json
                 cfg = json.loads(r.read().decode("utf-8"))
             state.apply(cfg)
-            print(f"[poll] mode={state.mode} whitelist={len(state.whitelist)} "
-                  f"blocked={len(state.blocked)}")
+            print(f"[poll] id={device_id} mode={state.mode} "
+                  f"whitelist={len(state.whitelist)} blocked={len(state.blocked)}")
         except Exception as e:
             print(f"[poll] failed: {e}")
         time.sleep(POLL_SECONDS)
@@ -209,13 +254,17 @@ def main():
     ap.add_argument("--no-setdns", action="store_true",
                     help="do not touch system DNS (dev / testing)")
     ap.add_argument("--port", type=int, default=53)
+    ap.add_argument("--device-id", help="override the machine id (dev)")
     args = ap.parse_args()
 
     state = State(args.server)
+    device_id = args.device_id or get_device_id()
+    name = device_name()
+    print(f"[id] device_id={device_id} name={name}")
 
     if args.once:
         import json
-        url = f"{state.server_url}/api/config?token={args.token}"
+        url = config_url(state, args.token, device_id, name)
         with urllib.request.urlopen(url, timeout=15) as r:
             cfg = json.loads(r.read().decode("utf-8"))
         state.apply(cfg)
@@ -227,7 +276,9 @@ def main():
         return
 
     # start config poller
-    threading.Thread(target=poll_loop, args=(state, args.token), daemon=True).start()
+    threading.Thread(target=poll_loop,
+                     args=(state, args.token, device_id, name),
+                     daemon=True).start()
     # start DNS re-assert loop
     if not args.no_setdns:
         threading.Thread(target=dns_assert_loop, daemon=True).start()
