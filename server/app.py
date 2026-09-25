@@ -145,6 +145,18 @@ def api_config():
     })
 
 
+@app.get("/api/verify-uninstall")
+def api_verify_uninstall():
+    """Used by the Windows uninstaller to confirm the parent's one-time code."""
+    token = request.args.get("token") or request.headers.get("X-Agent-Token")
+    if token != AGENT_TOKEN:
+        return jsonify({"error": "unauthorized"}), 401
+    code = (request.args.get("code") or "").strip().upper()
+    st = load_store()
+    ok = bool(st["uninstall_code"]) and code == st["uninstall_code"]
+    return jsonify({"ok": ok})
+
+
 @app.get("/healthz")
 def healthz():
     return "ok", 200
@@ -309,12 +321,12 @@ CSS = """
 
 LOGIN_HTML = """<!doctype html><html dir="rtl" lang="he"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>filter1 — כניסה</title><style>%s
+<title>filter1 — כניסה</title><style>__CSS__
  body{display:flex;min-height:100vh;align-items:center;justify-content:center}
  .card{background:#1e293b;padding:32px;border-radius:16px;width:320px}
- .card input{width:100%%;padding:12px;margin:8px 0;border-radius:8px;border:1px solid #334155;
+ .card input{width:100%;padding:12px;margin:8px 0;border-radius:8px;border:1px solid #334155;
    background:#0f172a;color:#e2e8f0;box-sizing:border-box}
- .card button{width:100%%}.err{color:#f87171;font-size:14px;min-height:18px}
+ .card button{width:100%}.err{color:#f87171;font-size:14px;min-height:18px}
 </style></head><body>
 <form class="card" method="post">
  <h1>🛡️ filter1 — בקרת הורים</h1>
@@ -322,11 +334,11 @@ LOGIN_HTML = """<!doctype html><html dir="rtl" lang="he"><head>
  <input type="password" name="password" placeholder="סיסמת הורה" autofocus>
  <button type="submit">כניסה</button>
  <div class="v">גרסה {{version}}</div>
-</form></body></html>""" % CSS
+</form></body></html>"""
 
 INDEX_HTML = """<!doctype html><html dir="rtl" lang="he"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>filter1 — מחשבים</title><style>%s</style></head><body><div class="wrap">
+<title>filter1 — מחשבים</title><style>__CSS__</style></head><body><div class="wrap">
  <div class="bar"><h1>🛡️ filter1 — מחשבים</h1><a href="/logout">יציאה</a></div>
  {% if not devices %}
   <div class="empty">אין עדיין מחשבים רשומים.<br>התקן את הסוכן על מחשב לקוח והוא יופיע כאן אוטומטית.</div>
@@ -348,11 +360,11 @@ INDEX_HTML = """<!doctype html><html dir="rtl" lang="he"><head>
    <button type="submit" class="gray">הפק קוד הסרה חדש</button></form>
  </div>
  <div class="v">גרסה {{version}}</div>
-</div></body></html>""" % CSS
+</div></body></html>"""
 
 DEVICE_HTML = """<!doctype html><html dir="rtl" lang="he"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>filter1 — {{d.name}}</title><style>%s</style></head><body><div class="wrap">
+<title>filter1 — {{d.name}}</title><style>__CSS__</style></head><body><div class="wrap">
  <div class="bar"><h1>🖥️ {{d.name}}</h1><a href="/">← כל המחשבים</a></div>
  <p class="meta">שם מארח: {{d.hostname}} · מזהה: {{did}}</p>
  <form method="post" action="/device/{{did}}/save">
@@ -392,7 +404,13 @@ DEVICE_HTML = """<!doctype html><html dir="rtl" lang="he"><head>
   </form>
  </div>
  <div class="v">גרסה {{version}}</div>
-</div></body></html>""" % CSS
+</div></body></html>"""
+
+# Inject the shared CSS. Using str.replace (not %-formatting) so the templates
+# can contain Jinja {% ... %} blocks and CSS % units without conflict.
+LOGIN_HTML = LOGIN_HTML.replace("__CSS__", CSS)
+INDEX_HTML = INDEX_HTML.replace("__CSS__", CSS)
+DEVICE_HTML = DEVICE_HTML.replace("__CSS__", CSS)
 
 
 if __name__ == "__main__":

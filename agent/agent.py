@@ -247,8 +247,10 @@ def dns_assert_loop():
 
 def main():
     ap = argparse.ArgumentParser(description="filter1 agent")
-    ap.add_argument("--server", required=True, help="control server URL")
-    ap.add_argument("--token", required=True, help="agent token")
+    ap.add_argument("--server", help="control server URL")
+    ap.add_argument("--token", help="agent token")
+    ap.add_argument("--config", help="path to a key=value config file "
+                    "(server=..., token=...); CLI flags override it")
     ap.add_argument("--once", action="store_true",
                     help="fetch config once and print the decision map (dev)")
     ap.add_argument("--no-setdns", action="store_true",
@@ -256,6 +258,28 @@ def main():
     ap.add_argument("--port", type=int, default=53)
     ap.add_argument("--device-id", help="override the machine id (dev)")
     args = ap.parse_args()
+
+    # merge config file (CLI flags win)
+    server = args.server
+    token = args.token
+    if args.config and os.path.exists(args.config):
+        try:
+            with open(args.config, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    k, v = k.strip().lower(), v.strip()
+                    if k == "server" and not server:
+                        server = v
+                    elif k == "token" and not token:
+                        token = v
+        except Exception as e:
+            print(f"[config] failed to read {args.config}: {e}")
+    if not server or not token:
+        sys.exit("Missing --server/--token (or a --config file providing them).")
+    args.server, args.token = server, token
 
     state = State(args.server)
     device_id = args.device_id or get_device_id()
