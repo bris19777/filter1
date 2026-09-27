@@ -524,10 +524,19 @@ function Find-X64Python {
 
 Write-Host "== filter1 client installer =="
 $py = Find-X64Python
-if (-not $py) {
+if (-not $py -and (Get-Command winget -ErrorAction SilentlyContinue)) {
   Write-Host "Installing 64-bit Python via winget..."
   winget install -e --id Python.Python.3.12 --architecture x64 --scope machine `
     --accept-source-agreements --accept-package-agreements
+  $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine")
+  $py = Find-X64Python
+}
+if (-not $py) {
+  Write-Host "Downloading 64-bit Python from python.org..."
+  $pyUrl = "https://www.python.org/ftp/python/3.12.7/python-3.12.7-amd64.exe"
+  $tmp = Join-Path $env:TEMP "python-x64-setup.exe"
+  Invoke-WebRequest -Uri $pyUrl -OutFile $tmp
+  Start-Process $tmp -ArgumentList "/quiet","InstallAllUsers=1","PrependPath=1","Include_launcher=0" -Wait
   $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine")
   $py = Find-X64Python
 }
@@ -638,10 +647,19 @@ function Find-X64Python {
 
 Write-Host "== filter1 mitmproxy content filter =="
 $py = Find-X64Python
-if (-not $py) {
+if (-not $py -and (Get-Command winget -ErrorAction SilentlyContinue)) {
   Write-Host "Installing 64-bit Python via winget..."
   winget install -e --id Python.Python.3.12 --architecture x64 --scope machine `
     --accept-source-agreements --accept-package-agreements
+  $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine")
+  $py = Find-X64Python
+}
+if (-not $py) {
+  Write-Host "Downloading 64-bit Python from python.org..."
+  $pyUrl = "https://www.python.org/ftp/python/3.12.7/python-3.12.7-amd64.exe"
+  $tmp = Join-Path $env:TEMP "python-x64-setup.exe"
+  Invoke-WebRequest -Uri $pyUrl -OutFile $tmp
+  Start-Process $tmp -ArgumentList "/quiet","InstallAllUsers=1","PrependPath=1","Include_launcher=0" -Wait
   $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine")
   $py = Find-X64Python
 }
