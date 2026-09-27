@@ -17,10 +17,10 @@ import secrets
 import time
 from functools import wraps
 
-from flask import (Flask, jsonify, redirect, render_template_string, request,
-                   session, url_for)
+from flask import (Flask, Response, jsonify, redirect, render_template_string,
+                   request, session, url_for)
 
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.7.0"
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.environ.get("FILTER1_DATA", os.path.join(BASE, "data"))
@@ -35,8 +35,10 @@ MODES = ("open", "lockdown", "blacklist", "whitelist")
 ONLINE_WINDOW = 180  # seconds since last_seen to count a device as online
 
 DEFAULT_BLOCKLISTS = [
+    # StevenBlack unified + porn (~150k domains, includes the major adult sites)
     "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn/hosts",
-    "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/hosts/pro.txt",
+    # Sinfonietta pornography list, as a second reliable adult-content source
+    "https://raw.githubusercontent.com/Sinfonietta/hostfiles/master/pornography-hosts",
 ]
 
 # The per-device policy. New devices are created from these defaults.
@@ -132,6 +134,14 @@ def api_config():
     dev["last_seen"] = now
     if name:
         dev["hostname"] = name
+    # status the agent reports about the policy it has actually applied
+    try:
+        dev["blocked_count"] = int(request.args.get("count"))
+    except (TypeError, ValueError):
+        pass
+    amode = request.args.get("amode")
+    if amode:
+        dev["active_mode"] = amode
     save_store(st)
 
     return jsonify({
@@ -155,6 +165,29 @@ def api_verify_uninstall():
     st = load_store()
     ok = bool(st["uninstall_code"]) and code == st["uninstall_code"]
     return jsonify({"ok": ok})
+
+
+@app.get("/agent.py")
+def serve_agent():
+    """Serve the agent source so the one-line installer can fetch it."""
+    for p in (os.path.join(BASE, "client_agent.py"),
+              os.path.join(BASE, "..", "agent", "agent.py")):
+        if os.path.exists(p):
+            with open(p, "r", encoding="utf-8") as f:
+                return Response(f.read(), mimetype="text/plain")
+    return "agent source not found", 404
+
+
+@app.get("/install.ps1")
+def serve_installer():
+    """Return a self-elevating PowerShell installer with the server URL and the
+    agent token injected. Usage on the client (admin PowerShell):
+        iex (irm 'https://<server>/install.ps1?token=<AGENT_TOKEN>')
+    """
+    token = (request.args.get("token") or "").strip().strip("<>\"' ")
+    base = request.host_url.rstrip("/")
+    script = INSTALLER_PS1.replace("__SERVER__", base).replace("__TOKEN__", token)
+    return Response(script, mimetype="text/plain")
 
 
 @app.get("/healthz")
@@ -198,15 +231,28 @@ def index():
     for did, d in sorted(st["devices"].items(),
                          key=lambda kv: kv[1].get("last_seen", 0), reverse=True):
         last = d.get("last_seen", 0)
+        online = (now - last) <= ONLINE_WINDOW
+        mode = d.get("mode", "open")
+        active = d.get("active_mode")
+        bc = d.get("blocked_count")
+        if not online:
+            status = ""
+        elif active and active != mode:
+            status = "מחיל שינוי…"
+        elif mode == "blacklist":
+            status = f"פעיל · {bc:,} חסומים" if bc else "טוען רשימה…"
+        else:
+            status = "פעיל"
         devices.append({
             "id": did,
             "name": d.get("name") or did,
             "hostname": d.get("hostname", ""),
-            "mode": d.get("mode", "open"),
-            "mode_label": MODE_LABELS.get(d.get("mode", "open"))[0],
-            "online": (now - last) <= ONLINE_WINDOW,
+            "mode": mode,
+            "mode_label": MODE_LABELS.get(mode)[0],
+            "online": online,
             "last_seen": last,
             "ago": human_ago(now - last) if last else "מעולם לא",
+            "status": status,
         })
     return render_template_string(
         INDEX_HTML, devices=devices, version=APP_VERSION,
@@ -349,7 +395,7 @@ INDEX_HTML = """<!doctype html><html dir="rtl" lang="he"><head>
     <b><span class="dot {{'on' if dv.online else 'off'}}"></span>{{dv.name}}</b>
     <span class="pill">{{dv.mode_label}}</span>
    </div>
-   <div class="meta">{{dv.hostname}} · {{'מחובר' if dv.online else dv.ago}} · מזהה {{dv.id}}</div>
+   <div class="meta">{{dv.hostname}} · {{dv.status if (dv.online and dv.status) else ('מחובר' if dv.online else dv.ago)}} · מזהה {{dv.id}}</div>
   </a>
  {% endfor %}
  <div class="box">
@@ -411,6 +457,114 @@ DEVICE_HTML = """<!doctype html><html dir="rtl" lang="he"><head>
 LOGIN_HTML = LOGIN_HTML.replace("__CSS__", CSS)
 INDEX_HTML = INDEX_HTML.replace("__CSS__", CSS)
 DEVICE_HTML = DEVICE_HTML.replace("__CSS__", CSS)
+
+
+# One-line PowerShell installer, served by /install.ps1 with __SERVER__ and
+# __TOKEN__ filled in. Self-elevates via UAC, downloads the agent, installs it
+# as a SYSTEM scheduled task, and starts it.
+INSTALLER_PS1 = r'''$ErrorActionPreference = "Stop"
+$Server = "__SERVER__"
+$Token  = "__TOKEN__"
+
+# self-elevate if not running as administrator
+$admin = ([Security.Principal.WindowsPrincipal] `
+  [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+  [Security.Principal.WindowsBuiltinRole]::Administrator)
+if (-not $admin) {
+  Write-Host "Requesting administrator privileges..."
+  $cmd = "iex (irm '$Server/install.ps1?token=$Token')"
+  Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile","-Command",$cmd
+  return
+}
+
+$InstallDir = Join-Path $env:ProgramFiles "filter1"
+
+function Find-PythonW {
+  $c = Get-Command pythonw.exe -ErrorAction SilentlyContinue
+  if ($c) { return $c.Source }
+  foreach ($p in @(
+    "$env:LOCALAPPDATA\Programs\Python\Python312\pythonw.exe",
+    "$env:LOCALAPPDATA\Programs\Python\Python311\pythonw.exe",
+    "C:\Python312\pythonw.exe","C:\Python311\pythonw.exe")) {
+    if (Test-Path $p) { return $p }
+  }
+  return $null
+}
+
+Write-Host "== filter1 client installer =="
+$pyw = Find-PythonW
+if (-not $pyw) {
+  Write-Host "Installing Python via winget..."
+  winget install -e --id Python.Python.3.12 --scope machine `
+    --accept-source-agreements --accept-package-agreements
+  $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine")
+  $pyw = Find-PythonW
+}
+if (-not $pyw) { Write-Error "Python not found. Install Python 3 and re-run."; return }
+$py = $pyw -replace "pythonw.exe$","python.exe"
+
+& $py -m pip install --upgrade pip | Out-Null
+& $py -m pip install dnslib | Out-Null
+
+New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+Invoke-WebRequest -Uri "$Server/agent.py" -OutFile (Join-Path $InstallDir "agent.py")
+$cfg = Join-Path $InstallDir "filter1.cfg"
+[System.IO.File]::WriteAllText($cfg, "server=$Server`ntoken=$Token")
+
+$agent = Join-Path $InstallDir "agent.py"
+$action = New-ScheduledTaskAction -Execute $pyw -Argument "`"$agent`" --config `"$cfg`""
+$trigger = New-ScheduledTaskTrigger -AtStartup
+$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries `
+  -DontStopIfGoingOnBatteries -RestartInterval (New-TimeSpan -Minutes 1) `
+  -RestartCount 999 -ExecutionTimeLimit ([TimeSpan]::Zero)
+Register-ScheduledTask -TaskName "filter1" -Action $action -Trigger $trigger `
+  -Principal $principal -Settings $settings -Force | Out-Null
+Start-ScheduledTask -TaskName "filter1"
+
+# Disable browser DNS-over-HTTPS so browsers cannot bypass the filter.
+New-Item -Path "HKLM:\SOFTWARE\Policies\Google\Chrome" -Force | Out-Null
+Set-ItemProperty "HKLM:\SOFTWARE\Policies\Google\Chrome" -Name DnsOverHttpsMode -Value "off"
+New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Edge" -Force | Out-Null
+Set-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Edge" -Name DnsOverHttpsMode -Value "off"
+New-Item -Path "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\DNSOverHTTPS" -Force | Out-Null
+Set-ItemProperty "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\DNSOverHTTPS" -Name Enabled -Value 0 -Type DWord
+Set-ItemProperty "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\DNSOverHTTPS" -Name Locked -Value 1 -Type DWord
+
+# Firewall: block common VPN tunnel protocols so a VPN cannot bypass the filter.
+# (Stealth VPNs over TCP 443 cannot be blocked by port; a standard, non-admin
+# user account is what really prevents installing/running a VPN.)
+Remove-NetFirewallRule -Group "filter1" -ErrorAction SilentlyContinue
+New-NetFirewallRule -DisplayName "filter1 block WireGuard" -Group "filter1" -Direction Outbound -Action Block -Protocol UDP -RemotePort 51820 -ErrorAction SilentlyContinue | Out-Null
+New-NetFirewallRule -DisplayName "filter1 block OpenVPN" -Group "filter1" -Direction Outbound -Action Block -Protocol UDP -RemotePort 1194 -ErrorAction SilentlyContinue | Out-Null
+New-NetFirewallRule -DisplayName "filter1 block IKEv2" -Group "filter1" -Direction Outbound -Action Block -Protocol UDP -RemotePort 500,4500 -ErrorAction SilentlyContinue | Out-Null
+New-NetFirewallRule -DisplayName "filter1 block PPTP" -Group "filter1" -Direction Outbound -Action Block -Protocol TCP -RemotePort 1723 -ErrorAction SilentlyContinue | Out-Null
+New-NetFirewallRule -DisplayName "filter1 block L2TP" -Group "filter1" -Direction Outbound -Action Block -Protocol UDP -RemotePort 1701 -ErrorAction SilentlyContinue | Out-Null
+$vpnExes = @(
+  "$env:ProgramFiles\Proton\VPN\ProtonVPN.exe",
+  "$env:ProgramFiles\Proton Technologies\ProtonVPN\ProtonVPN.exe",
+  "${env:ProgramFiles(x86)}\Proton Technologies\ProtonVPN\ProtonVPN.exe",
+  "$env:LOCALAPPDATA\Programs\Proton VPN\ProtonVPN.exe")
+foreach ($e in $vpnExes) {
+  if (Test-Path $e) {
+    New-NetFirewallRule -DisplayName "filter1 block ProtonVPN" -Group "filter1" -Direction Outbound -Action Block -Program $e -ErrorAction SilentlyContinue | Out-Null
+  }
+}
+
+# Block known VPN clients from running at all (Image File Execution Options).
+# Blocks by executable name regardless of install path.
+$vpnApps = @("ProtonVPN.exe","ProtonVPNService.exe","ProtonVPN.WireGuardService.exe",
+  "nordvpn.exe","NordVPN.exe","expressvpn.exe","ExpressVPN.exe","openvpn.exe",
+  "openvpn-gui.exe","wireguard.exe","wg.exe","tunnelbear.exe","Windscribe.exe",
+  "windscribe.exe","hola.exe","psiphon3.exe","hss.exe","HotspotShield.exe","surfshark.exe")
+$ifeo = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options"
+foreach ($a in $vpnApps) {
+  New-Item -Path "$ifeo\$a" -Force | Out-Null
+  Set-ItemProperty -Path "$ifeo\$a" -Name "Debugger" -Value "$env:SystemRoot\System32\cmd.exe /c exit"
+}
+
+Write-Host "Done. The machine will appear in your control panel within a minute."
+'''
 
 
 if __name__ == "__main__":

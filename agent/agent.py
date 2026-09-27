@@ -35,9 +35,9 @@ try:
 except ImportError:
     sys.exit("Missing dependency. Run: pip install -r requirements.txt")
 
-UPSTREAM = "1.1.1.1"
+FALLBACK_UPSTREAMS = ["1.1.1.1", "8.8.8.8"]  # used only if we can't detect any
 POLL_SECONDS = 60          # how often to fetch config
-DNS_ASSERT_SECONDS = 30    # how often to re-assert the system DNS setting
+DNS_ASSERT_SECONDS = 30    # how often to re-assert / health-check the DNS setting
 BLOCK_IP = "0.0.0.0"
 IS_WINDOWS = platform.system() == "Windows"
 
@@ -90,22 +90,30 @@ class State:
         self.blocked = set()          # blacklist_manual + downloaded blocklists
         self.blocklist_urls = []
         self._blocklist_sig = None    # to avoid re-downloading unchanged lists
+        self.have_config = False      # True once we successfully fetched config
+        self.upstreams = list(FALLBACK_UPSTREAMS)  # real DNS to forward to
         # the control server's own host is always allowed so the agent can poll
         host = urlparse(self.server_url).hostname
         self.control_host = host.lower() if host else None
 
     def apply(self, cfg):
-        with self.lock:
-            self.mode = cfg.get("mode", "open")
-            self.whitelist = {d.lower() for d in cfg.get("whitelist", [])}
-            manual = {d.lower() for d in cfg.get("blacklist_manual", [])}
-            urls = cfg.get("blocklists", [])
-            sig = tuple(urls)
-            if self.mode == "blacklist" and sig != self._blocklist_sig:
-                downloaded = download_blocklists(urls)
+        mode = cfg.get("mode", "open")
+        whitelist = {d.lower() for d in cfg.get("whitelist", [])}
+        manual = {d.lower() for d in cfg.get("blacklist_manual", [])}
+        urls = cfg.get("blocklists", [])
+        sig = tuple(urls)
+        # download OUTSIDE the lock so DNS resolution is not stalled; only cache
+        # a non-empty result, so a transient failure retries on the next poll
+        if mode == "blacklist" and sig != self._blocklist_sig:
+            dl = download_blocklists(urls)
+            if dl:
+                self._downloaded = dl
                 self._blocklist_sig = sig
-                self._downloaded = downloaded
-            downloaded = getattr(self, "_downloaded", set())
+        downloaded = getattr(self, "_downloaded", set())
+        with self.lock:
+            self.have_config = True
+            self.mode = mode
+            self.whitelist = whitelist
             self.blocked = manual | downloaded
             self.blocklist_urls = urls
 
@@ -114,6 +122,9 @@ class State:
         name = qname.rstrip(".").lower()
         with self.lock:
             mode = self.mode
+            # fail-open: never block until we have a real config from the server
+            if not self.have_config:
+                return True
             if self.control_host and self._matches(name, {self.control_host}):
                 return True
             if mode == "open":
@@ -169,12 +180,14 @@ class Resolver(BaseResolver):
         qname = str(request.q.qname)
         reply = request.reply()
         if self.state.decision(qname):
-            # forward upstream and pass the answer through
-            try:
-                proxy = request.send(UPSTREAM, 53, timeout=5)
-                return DNSRecord.parse(proxy)
-            except Exception:
-                return reply  # empty reply on upstream failure
+            # forward to the first upstream that answers
+            for up in list(self.state.upstreams):
+                try:
+                    proxy = request.send(up, 53, timeout=4)
+                    return DNSRecord.parse(proxy)
+                except Exception:
+                    continue
+            return reply  # empty reply if every upstream failed
         else:
             # blocked: answer with 0.0.0.0
             if request.q.qtype == QTYPE.A:
@@ -182,15 +195,22 @@ class Resolver(BaseResolver):
             return reply
 
 
-def config_url(state, token, device_id, name):
-    q = urllib.parse.urlencode({
-        "token": token, "device_id": device_id, "name": name})
+def config_url(state, token, device_id, name, count=None, amode=None):
+    d = {"token": token, "device_id": device_id, "name": name}
+    if count is not None:
+        d["count"] = count
+    if amode is not None:
+        d["amode"] = amode
+    q = urllib.parse.urlencode(d)
     return f"{state.server_url}/api/config?{q}"
 
 
 def poll_loop(state, token, device_id, name):
-    url = config_url(state, token, device_id, name)
     while True:
+        # report the currently applied status so the panel can show readiness
+        with state.lock:
+            cnt, amode = len(state.blocked), state.mode
+        url = config_url(state, token, device_id, name, count=cnt, amode=amode)
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "filter1"})
             with urllib.request.urlopen(req, timeout=15) as r:
@@ -206,40 +226,106 @@ def poll_loop(state, token, device_id, name):
 
 # ---------------------------------------------------------------- system DNS
 
-def get_active_interface():
-    """Best-effort: find the connected interface name on Windows."""
+CREATE_NO_WINDOW = 0x08000000 if IS_WINDOWS else 0
+
+
+def _ps(cmd):
+    """Run a PowerShell command, return stdout text (or '')."""
     try:
         out = subprocess.check_output(
-            ["netsh", "interface", "show", "interface"],
-            text=True, stderr=subprocess.DEVNULL)
-        for line in out.splitlines():
-            if "Connected" in line or "מחובר" in line:
-                # last column is the interface name
-                name = line.split()[-1]
-                return name
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd],
+            text=True, stderr=subprocess.DEVNULL,
+            creationflags=CREATE_NO_WINDOW)
+        return out
     except Exception:
-        pass
-    return "Ethernet"
+        return ""
 
 
-def set_system_dns(iface):
-    """Point the machine's DNS at the local resolver (Windows)."""
+def read_current_dns():
+    """The machine's current IPv4 DNS servers, excluding our own loopback."""
+    if not IS_WINDOWS:
+        return []
+    out = _ps("(Get-DnsClientServerAddress -AddressFamily IPv4)."
+              "ServerAddresses -join ','")
+    servers = [s.strip() for s in out.replace("\n", ",").split(",") if s.strip()]
+    seen = []
+    for s in servers:
+        if not s.startswith("127.") and s not in seen:
+            seen.append(s)
+    return seen
+
+
+def get_upstreams():
+    """Detect the real DNS to forward to, and persist it so we keep it even
+    after we have overridden the system DNS with our own loopback."""
+    path = os.path.join(id_dir(), "upstreams.txt")
+    cur = read_current_dns()
+    if cur:
+        try:
+            os.makedirs(id_dir(), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(cur))
+        except Exception:
+            pass
+        base = cur
+    else:
+        base = []
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    base = [l.strip() for l in f if l.strip()]
+            except Exception:
+                base = []
+    ups = base + [u for u in FALLBACK_UPSTREAMS if u not in base]
+    return ups or list(FALLBACK_UPSTREAMS)
+
+
+def upstream_ok(state):
+    """True if at least one upstream answers a test query."""
+    for up in list(state.upstreams):
+        try:
+            q = DNSRecord.question("cloudflare.com")
+            q.send(up, 53, timeout=3)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def set_system_dns_all(addr):
     if not IS_WINDOWS:
         return
-    try:
-        subprocess.run(["netsh", "interface", "ipv4", "set", "dns",
-                        f"name={iface}", "static", "127.0.0.1"],
-                       check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception as e:
-        print(f"[dns] set failed: {e}")
+    _ps("Get-NetAdapter | Where-Object {$_.Status -eq 'Up'} | "
+        f"Set-DnsClientServerAddress -ServerAddresses {addr}")
 
 
-def dns_assert_loop():
+def reset_system_dns_all():
     if not IS_WINDOWS:
         return
-    iface = get_active_interface()
+    _ps("Get-NetAdapter | Where-Object {$_.Status -eq 'Up'} | "
+        "Set-DnsClientServerAddress -ResetServerAddresses")
+
+
+def dns_guard_loop(state):
+    """Keep the system DNS pointed at us WHILE we can still reach a real
+    upstream. If every upstream becomes unreachable, revert to automatic DNS so
+    the machine is never cut off (fail-open)."""
+    if not IS_WINDOWS:
+        return
+    fails = 0
+    taken_over = False
     while True:
-        set_system_dns(iface)
+        if upstream_ok(state):
+            fails = 0
+            set_system_dns_all("127.0.0.1")
+            taken_over = True
+        else:
+            fails += 1
+            if taken_over and fails >= 2:
+                print("[dns] no upstream reachable; reverting to automatic DNS "
+                      "(fail-open)")
+                reset_system_dns_all()
+                taken_over = False
         time.sleep(DNS_ASSERT_SECONDS)
 
 
@@ -264,19 +350,26 @@ def main():
     token = args.token
     if args.config and os.path.exists(args.config):
         try:
-            with open(args.config, "r", encoding="utf-8") as f:
+            # utf-8-sig transparently strips a BOM that PowerShell may have added
+            with open(args.config, "r", encoding="utf-8-sig") as f:
                 for line in f:
                     line = line.strip()
                     if not line or line.startswith("#") or "=" not in line:
                         continue
                     k, v = line.split("=", 1)
-                    k, v = k.strip().lower(), v.strip()
+                    k = k.strip().lower()
+                    v = v.strip()
                     if k == "server" and not server:
                         server = v
                     elif k == "token" and not token:
                         token = v
         except Exception as e:
             print(f"[config] failed to read {args.config}: {e}")
+
+    # tolerate a token/server pasted with surrounding <>, quotes or spaces
+    def _clean(x):
+        return x.strip().strip("<>\"' \t\r\n") if x else x
+    server, token = _clean(server), _clean(token)
     if not server or not token:
         sys.exit("Missing --server/--token (or a --config file providing them).")
     args.server, args.token = server, token
@@ -299,18 +392,23 @@ def main():
             print(f"  {test} -> {'ALLOW' if state.decision(test) else 'BLOCK'}")
         return
 
-    # start config poller
-    threading.Thread(target=poll_loop,
-                     args=(state, args.token, device_id, name),
-                     daemon=True).start()
-    # start DNS re-assert loop
-    if not args.no_setdns:
-        threading.Thread(target=dns_assert_loop, daemon=True).start()
+    # detect the real DNS to forward to BEFORE we override the system setting
+    state.upstreams = get_upstreams()
+    print(f"[dns] upstreams: {state.upstreams}")
 
+    # start the local resolver first, so we can forward before taking over DNS
     resolver = Resolver(state)
     server = DNSServer(resolver, port=args.port, address="127.0.0.1")
     print(f"[dns] listening on 127.0.0.1:{args.port}")
     server.start_thread()
+
+    # start config poller
+    threading.Thread(target=poll_loop,
+                     args=(state, args.token, device_id, name),
+                     daemon=True).start()
+    # take over the system DNS only while a real upstream stays reachable
+    if not args.no_setdns:
+        threading.Thread(target=dns_guard_loop, args=(state,), daemon=True).start()
     try:
         while True:
             time.sleep(1)

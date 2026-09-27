@@ -1,0 +1,24 @@
+# Remove the filter1 mitmproxy content filter and revert its system changes.
+$ErrorActionPreference = "SilentlyContinue"
+
+# stop and remove the proxy service
+schtasks /End /TN filter1-proxy | Out-Null
+schtasks /Delete /TN filter1-proxy /F | Out-Null
+
+# turn off the system proxy and unlock the UI
+$is = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings"
+Set-ItemProperty $is -Name ProxyEnable -Value 0 -Type DWord
+Remove-ItemProperty $is -Name ProxyServer
+Remove-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Internet Explorer\Control Panel" -Name Proxy
+Remove-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxySettingsPerUser
+
+# allow QUIC again
+Remove-NetFirewallRule -DisplayName "filter1 block QUIC"
+Remove-ItemProperty "HKLM:\SOFTWARE\Policies\Google\Chrome" -Name QuicAllowed
+Remove-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Edge" -Name QuicAllowed
+
+# remove the mitmproxy root certificate we installed
+Get-ChildItem Cert:\LocalMachine\Root | Where-Object { $_.Subject -like "*mitmproxy*" } |
+  ForEach-Object { Remove-Item $_.PSPath -Force }
+
+Write-Host "filter1 proxy removed and system proxy reverted."

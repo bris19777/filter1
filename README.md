@@ -70,5 +70,14 @@ python agent.py --server http://127.0.0.1:5055 --token DEV --once
 
 ```
 server/   שרת הבקרה (Flask + ממשק ווב)
-agent/    הסוכן ל-Windows (פרוקסי DNS + poller)
+agent/    הסוכן ל-Windows (פרוקסי DNS + poller + הקשחה)
+proxy/    שכבת יירוט TLS מלא עם mitmproxy (מתקדם, אופציונלי)
 ```
+
+## שכבות אכיפה
+
+1. **סינון DNS** (agent) — חוסם לפי דומיין. עוקף על ידי DoH/ECH.
+2. **כיבוי DoH + חסימת VPN + חסימת הרצת VPN** (agent, אוטומטי).
+3. **חומת אש ברירת-מחדל-חסום** (agent/windows/harden-firewall, אופציונלי).
+4. **חשבון בלי הרשאות מנהל** (ידני, הכי חשוב).
+5. **יירוט TLS מלא** (proxy, מתקדם) — סינון HTTPS לפי אתר גם מול DoH/ECH.

@@ -41,6 +41,23 @@ Get-NetAdapter | Where-Object { $_.Status -eq "Up" } | ForEach-Object {
     try { Set-DnsClientServerAddress -InterfaceIndex $_.ifIndex -ResetServerAddresses } catch {}
 }
 
+# re-enable browser DNS-over-HTTPS (undo the install-time policy)
+Remove-ItemProperty "HKLM:\SOFTWARE\Policies\Google\Chrome" -Name DnsOverHttpsMode -ErrorAction SilentlyContinue
+Remove-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Edge" -Name DnsOverHttpsMode -ErrorAction SilentlyContinue
+Remove-Item "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\DNSOverHTTPS" -Recurse -ErrorAction SilentlyContinue
+
+# remove the VPN-blocking firewall rules
+Remove-NetFirewallRule -Group "filter1" -ErrorAction SilentlyContinue
+
+# unblock VPN apps we blocked from running (remove our IFEO debugger entries)
+$ifeo = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options"
+Get-ChildItem $ifeo -ErrorAction SilentlyContinue | ForEach-Object {
+    $dbg = (Get-ItemProperty $_.PSPath -Name Debugger -ErrorAction SilentlyContinue).Debugger
+    if ($dbg -like "*cmd.exe /c exit*") {
+        Remove-Item $_.PSPath -Recurse -ErrorAction SilentlyContinue
+    }
+}
+
 # remove files
 Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue
 Write-Host "filter1 removed."

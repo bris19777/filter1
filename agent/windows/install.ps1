@@ -53,7 +53,7 @@ Write-Host "Using Python: $py"
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 Copy-Item (Join-Path (Split-Path $ScriptDir -Parent) "agent.py") $InstallDir -Force
 $cfg = Join-Path $InstallDir "filter1.cfg"
-"server=$Server`ntoken=$Token" | Set-Content -Path $cfg -Encoding UTF8
+[System.IO.File]::WriteAllText($cfg, "server=$Server`ntoken=$Token")
 Write-Host "Installed to $InstallDir"
 
 # 4. Register a scheduled task: at boot, as SYSTEM, restart on failure.
@@ -70,4 +70,35 @@ Register-ScheduledTask -TaskName "filter1" -Action $action -Trigger $trigger `
     -Principal $principal -Settings $settings -Force | Out-Null
 Start-ScheduledTask -TaskName "filter1"
 Write-Host "Scheduled task 'filter1' registered and started."
+
+# Disable browser DNS-over-HTTPS so browsers cannot bypass the filter.
+New-Item -Path "HKLM:\SOFTWARE\Policies\Google\Chrome" -Force | Out-Null
+Set-ItemProperty "HKLM:\SOFTWARE\Policies\Google\Chrome" -Name DnsOverHttpsMode -Value "off"
+New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Edge" -Force | Out-Null
+Set-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Edge" -Name DnsOverHttpsMode -Value "off"
+New-Item -Path "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\DNSOverHTTPS" -Force | Out-Null
+Set-ItemProperty "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\DNSOverHTTPS" -Name Enabled -Value 0 -Type DWord
+Set-ItemProperty "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\DNSOverHTTPS" -Name Locked -Value 1 -Type DWord
+Write-Host "Browser DNS-over-HTTPS disabled."
+
+# Firewall: block common VPN tunnel protocols so a VPN cannot bypass the filter.
+Remove-NetFirewallRule -Group "filter1" -ErrorAction SilentlyContinue
+New-NetFirewallRule -DisplayName "filter1 block WireGuard" -Group "filter1" -Direction Outbound -Action Block -Protocol UDP -RemotePort 51820 -ErrorAction SilentlyContinue | Out-Null
+New-NetFirewallRule -DisplayName "filter1 block OpenVPN" -Group "filter1" -Direction Outbound -Action Block -Protocol UDP -RemotePort 1194 -ErrorAction SilentlyContinue | Out-Null
+New-NetFirewallRule -DisplayName "filter1 block IKEv2" -Group "filter1" -Direction Outbound -Action Block -Protocol UDP -RemotePort 500,4500 -ErrorAction SilentlyContinue | Out-Null
+New-NetFirewallRule -DisplayName "filter1 block PPTP" -Group "filter1" -Direction Outbound -Action Block -Protocol TCP -RemotePort 1723 -ErrorAction SilentlyContinue | Out-Null
+New-NetFirewallRule -DisplayName "filter1 block L2TP" -Group "filter1" -Direction Outbound -Action Block -Protocol UDP -RemotePort 1701 -ErrorAction SilentlyContinue | Out-Null
+Write-Host "VPN protocol ports blocked in the firewall."
+
+# Block known VPN clients from running at all (Image File Execution Options).
+$vpnApps = @("ProtonVPN.exe","ProtonVPNService.exe","ProtonVPN.WireGuardService.exe",
+  "nordvpn.exe","NordVPN.exe","expressvpn.exe","ExpressVPN.exe","openvpn.exe",
+  "openvpn-gui.exe","wireguard.exe","wg.exe","tunnelbear.exe","Windscribe.exe",
+  "windscribe.exe","hola.exe","psiphon3.exe","hss.exe","HotspotShield.exe","surfshark.exe")
+$ifeo = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options"
+foreach ($a in $vpnApps) {
+  New-Item -Path "$ifeo\$a" -Force | Out-Null
+  Set-ItemProperty -Path "$ifeo\$a" -Name "Debugger" -Value "$env:SystemRoot\System32\cmd.exe /c exit"
+}
+Write-Host "Known VPN apps blocked from running."
 Write-Host "Done. The machine will appear in your control panel within a minute."

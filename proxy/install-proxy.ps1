@@ -1,0 +1,96 @@
+# filter1 layer 5 (ADVANCED): full TLS-intercepting content filter via mitmproxy.
+#
+# Filters HTTPS by hostname even against DoH/ECH, because mitmproxy terminates
+# TLS. Installs the mitmproxy root certificate, forces the machine through the
+# local proxy, blocks QUIC so nothing escapes over UDP 443, and runs mitmdump as
+# a SYSTEM service with our filter_addon.py.
+#
+# WARNING - read before running:
+#  * Only on machines YOU administer. The proxy sees all plaintext HTTPS.
+#  * Apps with certificate pinning (banking, WhatsApp, some Google/Microsoft
+#    services, most mobile-style apps) WILL break and must be bypassed.
+#  * Test on ONE machine you can reach. Keep uninstall-proxy.ps1 handy.
+#  * Requires administrator. Reuses filter1.cfg + device_id from the DNS agent,
+#    so install the DNS agent first.
+
+$ErrorActionPreference = "Stop"
+$InstallDir = Join-Path $env:ProgramFiles "filter1"
+$Conf = Join-Path $env:ProgramData "filter1\mitmproxy"
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+function Find-Python {
+  foreach ($p in @(
+    "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
+    "C:\Program Files\Python312\python.exe",
+    (Get-Command python -ErrorAction SilentlyContinue).Source)) {
+    if ($p -and (Test-Path $p)) { return $p }
+  }
+  return $null
+}
+
+Write-Host "== filter1 mitmproxy content filter =="
+$py = Find-Python
+if (-not $py) { Write-Error "Python not found. Install the DNS agent first."; return }
+
+# 1. install mitmproxy
+& $py -m pip install --upgrade pip | Out-Null
+& $py -m pip install mitmproxy | Out-Null
+$mitm = Join-Path (Split-Path $py) "Scripts\mitmdump.exe"
+if (-not (Test-Path $mitm)) { $mitm = Join-Path (Split-Path $py) "mitmdump.exe" }
+if (-not (Test-Path $mitm)) { Write-Error "mitmdump.exe not found after install."; return }
+
+# 2. generate the mitmproxy root CA into a fixed confdir
+New-Item -ItemType Directory -Force -Path $Conf | Out-Null
+$p = Start-Process $mitm -ArgumentList "--set","confdir=$Conf","--listen-port","8080","-q" -PassThru -WindowStyle Hidden
+Start-Sleep -Seconds 6
+Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+$ca = Join-Path $Conf "mitmproxy-ca-cert.cer"
+if (-not (Test-Path $ca)) { $ca = Join-Path $Conf "mitmproxy-ca-cert.pem" }
+if (-not (Test-Path $ca)) { Write-Error "CA not generated. Check mitmdump ran."; return }
+
+# 3. trust the CA machine-wide (Chrome/Edge use the Windows store)
+Import-Certificate -FilePath $ca -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
+# Firefox: trust Windows enterprise roots
+New-Item -Path "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\Certificates" -Force | Out-Null
+Set-ItemProperty "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\Certificates" -Name ImportEnterpriseRoots -Value 1 -Type DWord
+
+# 4. copy the filtering addon
+New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+Copy-Item (Join-Path $ScriptDir "filter_addon.py") $InstallDir -Force
+$addon = Join-Path $InstallDir "filter_addon.py"
+
+# 5. force the machine through the local proxy, for all users, and lock the UI
+$is = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings"
+New-Item $is -Force | Out-Null
+Set-ItemProperty $is -Name ProxyEnable -Value 1 -Type DWord
+Set-ItemProperty $is -Name ProxyServer -Value "127.0.0.1:8080"
+Set-ItemProperty $is -Name ProxyOverride -Value "<local>"
+$pol = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\Internet Settings"
+New-Item $pol -Force | Out-Null
+Set-ItemProperty $pol -Name ProxySettingsPerUser -Value 0 -Type DWord
+$iepol = "HKLM:\SOFTWARE\Policies\Microsoft\Internet Explorer\Control Panel"
+New-Item $iepol -Force | Out-Null
+Set-ItemProperty $iepol -Name Proxy -Value 1 -Type DWord
+
+# 6. block QUIC so browsers fall back to interceptable TCP
+New-NetFirewallRule -DisplayName "filter1 block QUIC" -Group "filter1" -Direction Outbound -Action Block -Protocol UDP -RemotePort 443 -ErrorAction SilentlyContinue | Out-Null
+foreach ($b in @("HKLM:\SOFTWARE\Policies\Google\Chrome","HKLM:\SOFTWARE\Policies\Microsoft\Edge")) {
+  New-Item -Path $b -Force | Out-Null
+  Set-ItemProperty -Path $b -Name QuicAllowed -Value 0 -Type DWord
+}
+
+# 7. run mitmdump as a SYSTEM scheduled task at boot, restart on failure
+$args = "--set confdir=$Conf -s `"$addon`" --listen-host 127.0.0.1 --listen-port 8080 -q"
+$action = New-ScheduledTaskAction -Execute $mitm -Argument $args
+$trigger = New-ScheduledTaskTrigger -AtStartup
+$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries `
+  -DontStopIfGoingOnBatteries -RestartInterval (New-TimeSpan -Minutes 1) `
+  -RestartCount 999 -ExecutionTimeLimit ([TimeSpan]::Zero)
+Register-ScheduledTask -TaskName "filter1-proxy" -Action $action -Trigger $trigger `
+  -Principal $principal -Settings $settings -Force | Out-Null
+Start-ScheduledTask -TaskName "filter1-proxy"
+
+Write-Host "Done. mitmproxy content filter running on 127.0.0.1:8080."
+Write-Host "Test browsing now. If a pinned app (e.g. banking) breaks, add its"
+Write-Host "host to a mitmproxy ignore list - see proxy/README.md."
