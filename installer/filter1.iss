@@ -39,13 +39,53 @@ Filename: "powershell.exe"; \
   Flags: runhidden; RunOnceId: "filter1removeall"
 
 [Code]
+function AskCode(): String;
+var
+  Form: TSetupForm;
+  Edit: TNewEdit;
+  OKButton, CancelButton: TNewButton;
+  Lbl: TNewStaticText;
+begin
+  Result := '';
+  Form := CreateCustomForm();
+  try
+    Form.ClientWidth := ScaleX(340);
+    Form.ClientHeight := ScaleY(140);
+    Form.Caption := 'הסרת filter1';
+    Form.BorderStyle := bsDialog;
+    Lbl := TNewStaticText.Create(Form);
+    Lbl.Parent := Form;
+    Lbl.Left := ScaleX(16); Lbl.Top := ScaleY(16); Lbl.Width := ScaleX(308);
+    Lbl.Caption := 'הזן את קוד ההסרה מלוח הבקרה:';
+    Edit := TNewEdit.Create(Form);
+    Edit.Parent := Form;
+    Edit.Left := ScaleX(16); Edit.Top := ScaleY(44); Edit.Width := ScaleX(308);
+    OKButton := TNewButton.Create(Form);
+    OKButton.Parent := Form;
+    OKButton.Left := ScaleX(168); OKButton.Top := ScaleY(96);
+    OKButton.Width := ScaleX(75); OKButton.Caption := 'אישור';
+    OKButton.ModalResult := mrOk;
+    CancelButton := TNewButton.Create(Form);
+    CancelButton.Parent := Form;
+    CancelButton.Left := ScaleX(249); CancelButton.Top := ScaleY(96);
+    CancelButton.Width := ScaleX(75); CancelButton.Caption := 'ביטול';
+    CancelButton.ModalResult := mrCancel;
+    Form.ActiveControl := Edit;
+    if Form.ShowModal() = mrOk then
+      Result := Edit.Text;
+  finally
+    Form.Free();
+  end;
+end;
+
 function VerifyCode(): Boolean;
 var
   Code, Url, Resp: String;
   Http: Variant;
 begin
   Result := False;
-  if not InputQuery('הסרת filter1', 'הזן את קוד ההסרה מלוח הבקרה:', Code) then
+  Code := AskCode();
+  if Code = '' then
     Exit;
   try
     Http := CreateOleObject('WinHttp.WinHttpRequest.5.1');
