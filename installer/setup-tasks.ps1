@@ -21,6 +21,24 @@ function NK($p) { if (-not (Test-Path $p)) { New-Item -Path $p -Force | Out-Null
 $cfg = Join-Path $InstallDir "filter1.cfg"
 [System.IO.File]::WriteAllText($cfg, "server=$Server`ntoken=$Token")
 
+# ---- ensure the Visual C++ runtime the bundled Python needs (clean machines
+#      often lack it, which would stop python.exe from starting at all) ----
+$vc = Join-Path $InstallDir "vc_redist.x64.exe"
+if (Test-Path $vc) {
+  Start-Process $vc -ArgumentList "/quiet","/norestart" -Wait -ErrorAction SilentlyContinue
+}
+
+# ---- self-test: prove the bundled Python runs before we rely on it ----
+New-Item -ItemType Directory -Force -Path (Join-Path $env:ProgramData "filter1") | Out-Null
+$selftest = Join-Path $env:ProgramData "filter1\selftest.log"
+"=== python + dnslib ===" | Out-File $selftest
+& $py -c "import sys, dnslib; print('py', sys.version); print('dnslib ok')" *>> $selftest 2>&1
+"exit=$LASTEXITCODE" | Out-File $selftest -Append
+"=== mitmproxy ===" | Out-File $selftest -Append
+& $py -c "import mitmproxy; print('mitmproxy', mitmproxy.__version__)" *>> $selftest 2>&1
+"=== agent --once ===" | Out-File $selftest -Append
+& $py "$agent" --config "$cfg" --once *>> $selftest 2>&1
+
 # ============================ DNS AGENT ============================
 Stop-ScheduledTask -TaskName "filter1" -ErrorAction SilentlyContinue | Out-Null
 Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*filter1\agent.py*' } |

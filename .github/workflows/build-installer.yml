@@ -33,6 +33,8 @@ jobs:
           Copy-Item installer\setup-tasks.ps1 installer\payload\
           Copy-Item installer\uninstall-all.ps1 installer\payload\
           Copy-Item installer\verify-uninstall.ps1 installer\payload\
+          # bundle the VC++ runtime so the private Python starts on clean machines
+          Invoke-WebRequest "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile installer\payload\vc_redist.x64.exe
 
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
