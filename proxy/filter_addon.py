@@ -43,6 +43,25 @@ def cfg_dir():
     return os.path.join(os.path.expanduser("~"), ".filter1")
 
 
+def data_dirs():
+    """Where the DNS agent may have written filter1.cfg / device_id. The
+    installer writes the cfg under Program Files; the agent writes device_id
+    under ProgramData, so search both."""
+    if os.name == "nt":
+        pf = os.environ.get("ProgramFiles", r"C:\Program Files")
+        pd = os.environ.get("ProgramData", r"C:\ProgramData")
+        return [os.path.join(pf, "filter1"), os.path.join(pd, "filter1")]
+    return [os.path.join(os.path.expanduser("~"), ".filter1")]
+
+
+def find_file(name):
+    for d in data_dirs():
+        p = os.path.join(d, name)
+        if os.path.exists(p):
+            return p
+    return None
+
+
 def log(msg):
     """Append a diagnostic line to <ProgramData>\\filter1\\proxy.log."""
     try:
@@ -71,26 +90,32 @@ class Policy:
         self.control_host = ""
 
     def load_local(self):
-        d = cfg_dir()
-        try:
-            with open(os.path.join(d, "filter1.cfg"), encoding="utf-8-sig") as f:
-                for line in f:
-                    line = line.strip()
-                    if "=" in line and not line.startswith("#"):
-                        k, v = line.split("=", 1)
-                        k = k.strip().lower()
-                        v = v.strip().strip("<>\"' ")
-                        if k == "server":
-                            self.server = v
-                        elif k == "token":
-                            self.token = v
-        except Exception as e:
-            print("[filter1] cannot read filter1.cfg:", e)
-        try:
-            with open(os.path.join(d, "device_id"), encoding="utf-8") as f:
-                self.device_id = f.read().strip() or "proxy"
-        except Exception:
-            self.device_id = "proxy"
+        cfg_path = find_file("filter1.cfg")
+        if cfg_path:
+            try:
+                with open(cfg_path, encoding="utf-8-sig") as f:
+                    for line in f:
+                        line = line.strip()
+                        if "=" in line and not line.startswith("#"):
+                            k, v = line.split("=", 1)
+                            k = k.strip().lower()
+                            v = v.strip().strip("<>\"' ")
+                            if k == "server":
+                                self.server = v
+                            elif k == "token":
+                                self.token = v
+            except Exception as e:
+                print("[filter1] cannot read filter1.cfg:", e)
+                log(f"cannot read {cfg_path}: {e}")
+        else:
+            log("filter1.cfg not found in " + " ; ".join(data_dirs()))
+        id_path = find_file("device_id")
+        if id_path:
+            try:
+                with open(id_path, encoding="utf-8") as f:
+                    self.device_id = f.read().strip() or "proxy"
+            except Exception:
+                self.device_id = "proxy"
         self.control_host = (urlparse(self.server).hostname or "").lower()
 
     def _download_blocklists(self, urls):
