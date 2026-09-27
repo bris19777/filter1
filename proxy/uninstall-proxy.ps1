@@ -12,10 +12,13 @@ Remove-ItemProperty $is -Name ProxyServer
 Remove-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Internet Explorer\Control Panel" -Name Proxy
 Remove-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxySettingsPerUser
 
-# allow QUIC again
+# allow QUIC again and remove the browser proxy policy
 Remove-NetFirewallRule -DisplayName "filter1 block QUIC"
-Remove-ItemProperty "HKLM:\SOFTWARE\Policies\Google\Chrome" -Name QuicAllowed
-Remove-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Edge" -Name QuicAllowed
+foreach ($b in @("HKLM:\SOFTWARE\Policies\Google\Chrome","HKLM:\SOFTWARE\Policies\Microsoft\Edge")) {
+  Remove-ItemProperty $b -Name QuicAllowed
+  Remove-ItemProperty $b -Name ProxyMode
+  Remove-ItemProperty $b -Name ProxyServer
+}
 
 # remove the mitmproxy root certificate we installed
 Get-ChildItem Cert:\LocalMachine\Root | Where-Object { $_.Subject -like "*mitmproxy*" } |

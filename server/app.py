@@ -721,6 +721,9 @@ New-NetFirewallRule -DisplayName "filter1 block QUIC" -Group "filter1" -Directio
 foreach ($b in @("HKLM:\SOFTWARE\Policies\Google\Chrome","HKLM:\SOFTWARE\Policies\Microsoft\Edge")) {
   NK $b
   Set-ItemProperty -Path $b -Name QuicAllowed -Value 0 -Type DWord
+  # force the browser through the local proxy via policy (reliable, machine-wide)
+  Set-ItemProperty -Path $b -Name ProxyMode -Value "fixed_servers"
+  Set-ItemProperty -Path $b -Name ProxyServer -Value "127.0.0.1:8080"
 }
 
 $pargs = "--set confdir=$Conf -s `"$addon`" --listen-host 127.0.0.1 --listen-port 8080 -q"

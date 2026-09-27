@@ -111,6 +111,8 @@ New-NetFirewallRule -DisplayName "filter1 block QUIC" -Group "filter1" -Directio
 foreach ($b in @("HKLM:\SOFTWARE\Policies\Google\Chrome","HKLM:\SOFTWARE\Policies\Microsoft\Edge")) {
   NK $b
   Set-ItemProperty -Path $b -Name QuicAllowed -Value 0 -Type DWord
+  Set-ItemProperty -Path $b -Name ProxyMode -Value "fixed_servers"
+  Set-ItemProperty -Path $b -Name ProxyServer -Value "127.0.0.1:8080"
 }
 
 # 7. run mitmdump as a SYSTEM scheduled task at boot, restart on failure
