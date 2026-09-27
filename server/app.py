@@ -20,7 +20,7 @@ from functools import wraps
 from flask import (Flask, Response, jsonify, redirect, render_template_string,
                    request, session, url_for)
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.environ.get("FILTER1_DATA", os.path.join(BASE, "data"))
@@ -234,7 +234,7 @@ def serve_installer():
         iex (irm 'https://<server>/install.ps1?token=<AGENT_TOKEN>')
     """
     token = (request.args.get("token") or "").strip().strip("<>\"' ")
-    base = request.host_url.rstrip("/")
+    base = "https://" + request.host   # Fly terminates TLS; force https for POSTs
     script = INSTALLER_PS1.replace("__SERVER__", base).replace("__TOKEN__", token)
     return Response(script, mimetype="text/plain")
 
@@ -258,7 +258,7 @@ def serve_proxy_installer():
         iex (irm 'https://<server>/install-proxy.ps1?token=<AGENT_TOKEN>')
     """
     token = (request.args.get("token") or "").strip().strip("<>\"' ")
-    base = request.host_url.rstrip("/")
+    base = "https://" + request.host   # Fly terminates TLS; force https for POSTs
     script = PROXY_INSTALLER_PS1.replace("__SERVER__", base).replace("__TOKEN__", token)
     return Response(script, mimetype="text/plain")
 
