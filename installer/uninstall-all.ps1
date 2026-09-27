@@ -15,10 +15,16 @@ Get-NetAdapter | Where-Object { $_.Status -eq "Up" } |
   ForEach-Object { Set-DnsClientServerAddress -InterfaceIndex $_.ifIndex -ResetServerAddresses }
 Clear-DnsClientCache
 
-# turn off the system proxy
+# turn off the system proxy and any proxy-locking policies
 $is = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings"
 Set-ItemProperty $is -Name ProxyEnable -Value 0 -Type DWord
 Remove-ItemProperty $is -Name ProxyServer
+Remove-ItemProperty $is -Name ProxyOverride
+Remove-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxySettingsPerUser
+Remove-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Internet Explorer\Control Panel" -Name Proxy
+$hku = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+Set-ItemProperty $hku -Name ProxyEnable -Value 0 -Type DWord
+Remove-ItemProperty $hku -Name ProxyServer
 
 # re-enable DoH and remove browser proxy/QUIC policies
 foreach ($b in @("HKLM:\SOFTWARE\Policies\Google\Chrome","HKLM:\SOFTWARE\Policies\Microsoft\Edge")) {
