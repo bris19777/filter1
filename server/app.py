@@ -504,7 +504,14 @@ if (-not $admin) {
 $InstallDir = Join-Path $env:ProgramFiles "filter1"
 
 function Get-PyArch($py) {
-  try { return (& $py -c "import platform;print(platform.machine())" 2>$null).Trim() } catch { return "" }
+  # use the interpreter's build tag ((AMD64)/(ARM64)); platform.machine() is
+  # unreliable on ARM64 Windows, where emulated x64 still reports ARM64
+  try {
+    $v = & $py -c "import sys;print(sys.version)" 2>$null
+    if ($v -match "\(ARM64\)") { return "ARM64" }
+    if ($v -match "\(AMD64\)") { return "AMD64" }
+    return ""
+  } catch { return "" }
 }
 function All-Pythons {
   $c = @()
@@ -629,7 +636,14 @@ $InstallDir = Join-Path $env:ProgramFiles "filter1"
 $Conf = Join-Path $env:ProgramData "filter1\mitmproxy"
 
 function Get-PyArch($py) {
-  try { return (& $py -c "import platform;print(platform.machine())" 2>$null).Trim() } catch { return "" }
+  # use the interpreter's build tag ((AMD64)/(ARM64)); platform.machine() is
+  # unreliable on ARM64 Windows, where emulated x64 still reports ARM64
+  try {
+    $v = & $py -c "import sys;print(sys.version)" 2>$null
+    if ($v -match "\(ARM64\)") { return "ARM64" }
+    if ($v -match "\(AMD64\)") { return "AMD64" }
+    return ""
+  } catch { return "" }
 }
 function All-Pythons {
   $c = @()

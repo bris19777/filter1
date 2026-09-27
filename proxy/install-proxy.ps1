@@ -19,7 +19,12 @@ $Conf = Join-Path $env:ProgramData "filter1\mitmproxy"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 function Get-PyArch($py) {
-  try { return (& $py -c "import platform;print(platform.machine())" 2>$null).Trim() } catch { return "" }
+  try {
+    $v = & $py -c "import sys;print(sys.version)" 2>$null
+    if ($v -match "\(ARM64\)") { return "ARM64" }
+    if ($v -match "\(AMD64\)") { return "AMD64" }
+    return ""
+  } catch { return "" }
 }
 function All-Pythons {
   $c = @()
