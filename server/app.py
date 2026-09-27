@@ -20,7 +20,7 @@ from functools import wraps
 from flask import (Flask, Response, jsonify, redirect, render_template_string,
                    request, session, url_for)
 
-APP_VERSION = "0.7.0"
+APP_VERSION = "0.9.0"
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.environ.get("FILTER1_DATA", os.path.join(BASE, "data"))
