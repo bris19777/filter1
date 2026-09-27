@@ -577,6 +577,9 @@ $cfg = Join-Path $InstallDir "filter1.cfg"
 [System.IO.File]::WriteAllText($cfg, "server=$Server`ntoken=$Token")
 
 $agent = Join-Path $InstallDir "agent.py"
+# stop any previous agent so the new code takes over port 53
+Stop-ScheduledTask -TaskName "filter1" -ErrorAction SilentlyContinue | Out-Null
+Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*filter1\agent.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 $action = New-ScheduledTaskAction -Execute $pyw -Argument "`"$agent`" --config `"$cfg`""
 $trigger = New-ScheduledTaskTrigger -AtStartup
 $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
@@ -742,6 +745,9 @@ foreach ($b in @("HKLM:\SOFTWARE\Policies\Google\Chrome","HKLM:\SOFTWARE\Policie
   Set-ItemProperty -Path $b -Name ProxyServer -Value "127.0.0.1:8080"
 }
 
+# stop any previous proxy so the new one takes over port 8080
+Stop-ScheduledTask -TaskName "filter1-proxy" -ErrorAction SilentlyContinue | Out-Null
+Get-Process mitmdump -ErrorAction SilentlyContinue | Stop-Process -Force
 $pargs = "--set confdir=$Conf -s `"$addon`" --listen-host 127.0.0.1 --listen-port 8080 -q"
 $action = New-ScheduledTaskAction -Execute $mitm -Argument $pargs
 $trigger = New-ScheduledTaskTrigger -AtStartup

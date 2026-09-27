@@ -80,6 +80,9 @@ Write-Host "Installed to $InstallDir"
 
 # 4. Register a scheduled task: at boot, as SYSTEM, restart on failure.
 $agent = Join-Path $InstallDir "agent.py"
+# stop any previous agent so the new code takes over port 53
+Stop-ScheduledTask -TaskName "filter1" -ErrorAction SilentlyContinue | Out-Null
+Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*filter1\agent.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 $action = New-ScheduledTaskAction -Execute $pyw `
     -Argument "`"$agent`" --config `"$cfg`""
 $trigger = New-ScheduledTaskTrigger -AtStartup

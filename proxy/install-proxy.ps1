@@ -116,6 +116,9 @@ foreach ($b in @("HKLM:\SOFTWARE\Policies\Google\Chrome","HKLM:\SOFTWARE\Policie
 }
 
 # 7. run mitmdump as a SYSTEM scheduled task at boot, restart on failure
+# stop any previous proxy so the new one takes over port 8080
+Stop-ScheduledTask -TaskName "filter1-proxy" -ErrorAction SilentlyContinue | Out-Null
+Get-Process mitmdump -ErrorAction SilentlyContinue | Stop-Process -Force
 $args = "--set confdir=$Conf -s `"$addon`" --listen-host 127.0.0.1 --listen-port 8080 -q"
 $action = New-ScheduledTaskAction -Execute $mitm -Argument $args
 $trigger = New-ScheduledTaskTrigger -AtStartup
