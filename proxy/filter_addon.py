@@ -43,6 +43,16 @@ def cfg_dir():
     return os.path.join(os.path.expanduser("~"), ".filter1")
 
 
+def log(msg):
+    """Append a diagnostic line to <ProgramData>\\filter1\\proxy.log."""
+    try:
+        line = time.strftime("%Y-%m-%d %H:%M:%S ") + msg + "\n"
+        with open(os.path.join(cfg_dir(), "proxy.log"), "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception:
+        pass
+
+
 class Policy:
     def __init__(self):
         self.lock = threading.Lock()
@@ -92,6 +102,7 @@ class Policy:
                     text = r.read().decode("utf-8", "ignore")
             except Exception as e:
                 print("[filter1] blocklist failed", url, e)
+                log(f"blocklist failed {url}: {e}")
                 continue
             for line in text.splitlines():
                 line = line.strip()
@@ -103,6 +114,7 @@ class Policy:
                 if domain and domain not in ("localhost", "0.0.0.0", "127.0.0.1"):
                     blocked.add(domain)
         print("[filter1] blocklist loaded", len(blocked), "domains")
+        log(f"blocklist loaded {len(blocked)} domains")
         return blocked
 
     def poll_loop(self):
@@ -132,10 +144,13 @@ class Policy:
                     self.manual = manual
                     self.blocklist_urls = urls
                     self.have = True
-                print(f"[filter1] mode={mode} wl={len(whitelist)} "
-                      f"blocked={len(manual) + len(self.downloaded)}")
+                msg = (f"poll ok: mode={mode} layers={self.layers} "
+                       f"wl={len(whitelist)} blocked={len(manual) + len(self.downloaded)}")
+                print("[filter1]", msg)
+                log(msg)
             except Exception as e:
                 print("[filter1] poll failed:", e)
+                log(f"poll failed: {e}")
             time.sleep(POLL_SECONDS)
 
     @staticmethod
@@ -180,6 +195,8 @@ BLOCK_HTML = (
 
 def load(loader):
     POLICY.load_local()
+    log(f"addon started: server={POLICY.server} device={POLICY.device_id} "
+        f"control_host={POLICY.control_host}")
     threading.Thread(target=POLICY.poll_loop, daemon=True).start()
 
 
