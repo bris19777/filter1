@@ -6,3 +6,6 @@ build/
 *.spec
 .venv/
 venv/
+
+installer/payload/
+installer/Output/

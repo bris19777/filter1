@@ -1,0 +1,52 @@
+name: Build installer
+
+# Builds the all-in-one Windows installer (filter1-setup.exe) on a Windows
+# runner and uploads it as an artifact. Run it manually from the Actions tab,
+# or it runs on a version tag push.
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+
+      - name: Stage payload (private Python + packages + scripts)
+        shell: pwsh
+        run: |
+          $prefix = (python -c "import sys;print(sys.prefix)").Trim()
+          New-Item -ItemType Directory -Force -Path installer\payload | Out-Null
+          Copy-Item $prefix installer\payload\py -Recurse
+          installer\payload\py\python.exe -m pip install --upgrade pip
+          installer\payload\py\python.exe -m pip install dnslib mitmproxy
+          Copy-Item agent\agent.py            installer\payload\agent.py
+          Copy-Item proxy\filter_addon.py     installer\payload\filter_addon.py
+          Copy-Item installer\run_proxy.py    installer\payload\
+          Copy-Item installer\setup-tasks.ps1 installer\payload\
+          Copy-Item installer\uninstall-all.ps1 installer\payload\
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Compile installer
+        shell: pwsh
+        run: |
+          $server = "${{ vars.FILTER1_SERVER }}"
+          if (-not $server) { $server = "https://bsd-filter1.fly.dev" }
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
+            "/DMyToken=${{ secrets.AGENT_TOKEN }}" `
+            "/DMyServer=$server" `
+            installer\filter1.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: filter1-setup
+          path: installer\Output\filter1-setup.exe
