@@ -57,14 +57,20 @@ def cfg_dir():
 
 
 def data_dirs():
-    """Where the DNS agent may have written filter1.cfg / device_id. The
-    installer writes the cfg under Program Files; the agent writes device_id
-    under ProgramData, so search both."""
+    """Where filter1.cfg / device_id may live. The cfg sits next to this addon
+    in the install dir (which may be Program Files or Program Files (x86)); the
+    agent writes device_id under ProgramData. Search this dir first, then the
+    common locations."""
+    dirs = [os.path.dirname(os.path.abspath(__file__))]
     if os.name == "nt":
-        pf = os.environ.get("ProgramFiles", r"C:\Program Files")
         pd = os.environ.get("ProgramData", r"C:\ProgramData")
-        return [os.path.join(pf, "filter1"), os.path.join(pd, "filter1")]
-    return [os.path.join(os.path.expanduser("~"), ".filter1")]
+        for pf in (os.environ.get("ProgramFiles", r"C:\Program Files"),
+                   os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")):
+            dirs.append(os.path.join(pf, "filter1"))
+        dirs.append(os.path.join(pd, "filter1"))
+    else:
+        dirs.append(os.path.join(os.path.expanduser("~"), ".filter1"))
+    return dirs
 
 
 def find_file(name):
