@@ -20,7 +20,7 @@ from functools import wraps
 from flask import (Flask, Response, jsonify, redirect, render_template_string,
                    request, session, url_for)
 
-APP_VERSION = "0.9.0"
+APP_VERSION = "1.0.0"
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.environ.get("FILTER1_DATA", os.path.join(BASE, "data"))
@@ -46,7 +46,10 @@ DEVICE_DEFAULTS = {
     "mode": "open",
     "whitelist": [],
     "blacklist_manual": [],
+    "layers": "both",   # which layer enforces: dns | proxy | both
 }
+
+LAYERS = ("dns", "proxy", "both")
 
 DEFAULT_STORE = {
     "defaults": dict(DEVICE_DEFAULTS),
@@ -147,6 +150,7 @@ def api_config():
     return jsonify({
         "device_id": device_id,
         "mode": dev["mode"],
+        "layers": dev.get("layers", "both"),
         "whitelist": dev["whitelist"],
         "blacklist_manual": dev["blacklist_manual"],
         "blocklists": st["blocklists"],
@@ -292,7 +296,7 @@ def device(device_id):
         return redirect(url_for("index"))
     return render_template_string(
         DEVICE_HTML, did=device_id, d=d, modes=MODES, labels=MODE_LABELS,
-        version=APP_VERSION,
+        version=APP_VERSION, layers=d.get("layers", "both"),
         wl="\n".join(d.get("whitelist", [])),
         bl="\n".join(d.get("blacklist_manual", [])),
         blocklists="\n".join(st["blocklists"]),
@@ -312,6 +316,9 @@ def device_save(device_id):
     mode = request.form.get("mode", "open")
     if mode in MODES:
         d["mode"] = mode
+    layer = request.form.get("layers")
+    if layer in LAYERS:
+        d["layers"] = layer
     d["whitelist"] = clean_domains(request.form.get("whitelist"))
     d["blacklist_manual"] = clean_domains(request.form.get("blacklist_manual"))
     # blocklists are shared across devices
@@ -449,6 +456,15 @@ DEVICE_HTML = """<!doctype html><html dir="rtl" lang="he"><head>
     <b>{{labels[m][0]}}</b><small>{{labels[m][1]}}</small>
    </label>
    {% endfor %}
+  </div>
+  <div class="field">
+   <h3>שכבת אכיפה</h3>
+   <p>איך המחשב חוסם: DNS מהיר, פרוקסי לפי תוכן (גם מול DoH), או שניהם. הפרוקסי חייב להיות מותקן.</p>
+   <select name="layers" class="txt">
+    <option value="both" {{'selected' if layers=='both' else ''}}>שניהם — DNS + פרוקסי</option>
+    <option value="dns" {{'selected' if layers=='dns' else ''}}>DNS בלבד</option>
+    <option value="proxy" {{'selected' if layers=='proxy' else ''}}>פרוקסי בלבד</option>
+   </select>
   </div>
   <div class="field">
    <h3>רשימה לבנה (מותר)</h3>

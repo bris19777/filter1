@@ -91,6 +91,7 @@ class State:
         self.blocklist_urls = []
         self._blocklist_sig = None    # to avoid re-downloading unchanged lists
         self.have_config = False      # True once we successfully fetched config
+        self.layers = "both"          # dns | proxy | both (which layer enforces)
         self.upstreams = list(FALLBACK_UPSTREAMS)  # real DNS to forward to
         # the control server's own host is always allowed so the agent can poll
         host = urlparse(self.server_url).hostname
@@ -113,6 +114,7 @@ class State:
         with self.lock:
             self.have_config = True
             self.mode = mode
+            self.layers = cfg.get("layers", "both")
             self.whitelist = whitelist
             self.blocked = manual | downloaded
             self.blocklist_urls = urls
@@ -126,6 +128,9 @@ class State:
             if not self.have_config:
                 return True
             if self.control_host and self._matches(name, {self.control_host}):
+                return True
+            # DNS layer disabled (proxy enforces): forward everything
+            if self.layers == "proxy":
                 return True
             if mode == "open":
                 return True

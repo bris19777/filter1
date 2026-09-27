@@ -42,6 +42,7 @@ class Policy:
     def __init__(self):
         self.lock = threading.Lock()
         self.mode = "open"
+        self.layers = "both"           # dns | proxy | both (which layer enforces)
         self.whitelist = set()
         self.manual = set()
         self.downloaded = set()
@@ -121,6 +122,7 @@ class Policy:
                     self._last_dl = now
                 with self.lock:
                     self.mode = mode
+                    self.layers = cfg.get("layers", "both")
                     self.whitelist = whitelist
                     self.manual = manual
                     self.blocklist_urls = urls
@@ -144,6 +146,9 @@ class Policy:
             if not self.have:          # fail-open until we have a real policy
                 return True
             if self.control_host and self._match(host, {self.control_host}):
+                return True
+            # proxy layer disabled (DNS enforces): pass everything through
+            if self.layers == "dns":
                 return True
             if self.mode == "open":
                 return True
