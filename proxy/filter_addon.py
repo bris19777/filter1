@@ -19,6 +19,7 @@ filter1 root certificate installed on those machines.
 
 import json
 import os
+import ssl
 import threading
 import time
 import urllib.parse
@@ -33,8 +34,19 @@ FLUSH_SECONDS = 20        # how often to send batched activity to the server
 
 # talk to the control server and blocklists DIRECTLY, never through the system
 # proxy (which is this very process) — otherwise the addon's own requests loop
-# back through mitmproxy and can fail, leaving the policy unloaded
-DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+# back through mitmproxy and can fail, leaving the policy unloaded. Verify TLS
+# with certifi's CA bundle (a bundled Python may not read the Windows store).
+def _ssl_context():
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return ssl.create_default_context()
+
+
+DIRECT = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}),
+    urllib.request.HTTPSHandler(context=_ssl_context()))
 
 
 def cfg_dir():

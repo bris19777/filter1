@@ -20,6 +20,7 @@ import argparse
 import os
 import platform
 import socket
+import ssl
 import subprocess
 import sys
 import threading
@@ -28,6 +29,19 @@ import urllib.parse
 import urllib.request
 import uuid
 from urllib.parse import urlparse
+
+
+def _ssl_context():
+    """A verifying SSL context. A bundled/relocated Python may not read the
+    Windows root store, so prefer certifi's CA bundle when it is available."""
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return ssl.create_default_context()
+
+
+SSL_CTX = _ssl_context()
 
 try:
     from dnslib import QTYPE, RR, A, DNSRecord
@@ -158,7 +172,7 @@ def download_blocklists(urls):
     for url in urls:
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "filter1"})
-            with urllib.request.urlopen(req, timeout=30) as r:
+            with urllib.request.urlopen(req, timeout=30, context=SSL_CTX) as r:
                 text = r.read().decode("utf-8", "ignore")
         except Exception as e:
             print(f"[blocklist] failed {url}: {e}")
@@ -218,7 +232,7 @@ def poll_loop(state, token, device_id, name):
         url = config_url(state, token, device_id, name, count=cnt, amode=amode)
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "filter1"})
-            with urllib.request.urlopen(req, timeout=15) as r:
+            with urllib.request.urlopen(req, timeout=15, context=SSL_CTX) as r:
                 import json
                 cfg = json.loads(r.read().decode("utf-8"))
             state.apply(cfg)
@@ -387,7 +401,7 @@ def main():
     if args.once:
         import json
         url = config_url(state, args.token, device_id, name)
-        with urllib.request.urlopen(url, timeout=15) as r:
+        with urllib.request.urlopen(url, timeout=15, context=SSL_CTX) as r:
             cfg = json.loads(r.read().decode("utf-8"))
         state.apply(cfg)
         print("mode:", state.mode)
