@@ -93,18 +93,9 @@ New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 Copy-Item (Join-Path $ScriptDir "filter_addon.py") $InstallDir -Force
 $addon = Join-Path $InstallDir "filter_addon.py"
 
-# 5. force the machine through the local proxy, for all users, and lock the UI
-$is = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings"
-NK $is
-Set-ItemProperty $is -Name ProxyEnable -Value 1 -Type DWord
-Set-ItemProperty $is -Name ProxyServer -Value "127.0.0.1:8080"
-Set-ItemProperty $is -Name ProxyOverride -Value "<local>"
-$pol = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\Internet Settings"
-NK $pol
-Set-ItemProperty $pol -Name ProxySettingsPerUser -Value 0 -Type DWord
-$iepol = "HKLM:\SOFTWARE\Policies\Microsoft\Internet Explorer\Control Panel"
-NK $iepol
-Set-ItemProperty $iepol -Name Proxy -Value 1 -Type DWord
+# 5. route browsers through the proxy via BROWSER POLICY only (below). We do NOT
+#    set the system-wide WinINET proxy: it makes Windows block app launches
+#    during its security-zone checks ("Internet security settings prevented...").
 
 # 6. block QUIC so browsers fall back to interceptable TCP
 New-NetFirewallRule -DisplayName "filter1 block QUIC" -Group "filter1" -Direction Outbound -Action Block -Protocol UDP -RemotePort 443 -ErrorAction SilentlyContinue | Out-Null

@@ -20,7 +20,7 @@ from functools import wraps
 from flask import (Flask, Response, jsonify, redirect, render_template_string,
                    request, session, url_for)
 
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.1.2"
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.environ.get("FILTER1_DATA", os.path.join(BASE, "data"))
@@ -838,18 +838,8 @@ New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 $addon = Join-Path $InstallDir "filter_addon.py"
 Invoke-WebRequest -Uri "$Server/filter_addon.py" -OutFile $addon
 
-$is = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings"
-NK $is
-Set-ItemProperty $is -Name ProxyEnable -Value 1 -Type DWord
-Set-ItemProperty $is -Name ProxyServer -Value "127.0.0.1:8080"
-Set-ItemProperty $is -Name ProxyOverride -Value "<local>"
-$pol = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\Internet Settings"
-NK $pol
-Set-ItemProperty $pol -Name ProxySettingsPerUser -Value 0 -Type DWord
-$iepol = "HKLM:\SOFTWARE\Policies\Microsoft\Internet Explorer\Control Panel"
-NK $iepol
-Set-ItemProperty $iepol -Name Proxy -Value 1 -Type DWord
-
+# route browsers via BROWSER POLICY only (below); the system-wide WinINET proxy
+# makes Windows block app launches during its security-zone checks.
 New-NetFirewallRule -DisplayName "filter1 block QUIC" -Group "filter1" -Direction Outbound -Action Block -Protocol UDP -RemotePort 443 -ErrorAction SilentlyContinue | Out-Null
 foreach ($b in @("HKLM:\SOFTWARE\Policies\Google\Chrome","HKLM:\SOFTWARE\Policies\Microsoft\Edge")) {
   NK $b

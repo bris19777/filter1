@@ -77,11 +77,8 @@ if (Test-Path $ca) {
   Set-ItemProperty "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\Certificates" -Name ImportEnterpriseRoots -Value 1 -Type DWord
 }
 
-# force browsers through the proxy + block QUIC
-NK "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings"
-$is = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings"
-Set-ItemProperty $is -Name ProxyEnable -Value 1 -Type DWord
-Set-ItemProperty $is -Name ProxyServer -Value "127.0.0.1:8080"
+# force browsers through the proxy via BROWSER POLICY only (NOT the system-wide
+# WinINET proxy, which makes Windows block app launches during its zone checks)
 New-NetFirewallRule -DisplayName "filter1 block QUIC" -Group "filter1" -Direction Outbound -Action Block -Protocol UDP -RemotePort 443 -ErrorAction SilentlyContinue | Out-Null
 foreach ($b in @("HKLM:\SOFTWARE\Policies\Google\Chrome","HKLM:\SOFTWARE\Policies\Microsoft\Edge")) {
   New-Item -Path $b -Force | Out-Null
