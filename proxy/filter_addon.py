@@ -30,6 +30,11 @@ from mitmproxy import http
 POLL_SECONDS = 60
 BLOCKLIST_REFRESH = 3600  # re-download public blocklists at most this often
 
+# talk to the control server and blocklists DIRECTLY, never through the system
+# proxy (which is this very process) — otherwise the addon's own requests loop
+# back through mitmproxy and can fail, leaving the policy unloaded
+DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
 
 def cfg_dir():
     if os.name == "nt":
@@ -83,7 +88,7 @@ class Policy:
         for url in urls:
             try:
                 req = urllib.request.Request(url, headers={"User-Agent": "filter1"})
-                with urllib.request.urlopen(req, timeout=30) as r:
+                with DIRECT.open(req, timeout=60) as r:
                     text = r.read().decode("utf-8", "ignore")
             except Exception as e:
                 print("[filter1] blocklist failed", url, e)
@@ -107,7 +112,7 @@ class Policy:
                     "token": self.token, "device_id": self.device_id,
                     "name": "proxy"})
                 url = f"{self.server}/api/config?{q}"
-                with urllib.request.urlopen(url, timeout=15) as r:
+                with DIRECT.open(url, timeout=15) as r:
                     cfg = json.loads(r.read().decode("utf-8"))
                 mode = cfg.get("mode", "open")
                 whitelist = {d.lower() for d in cfg.get("whitelist", [])}
