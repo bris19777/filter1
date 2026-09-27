@@ -20,7 +20,7 @@ from functools import wraps
 from flask import (Flask, Response, jsonify, redirect, render_template_string,
                    request, session, url_for)
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.environ.get("FILTER1_DATA", os.path.join(BASE, "data"))
@@ -33,6 +33,7 @@ SECRET = os.environ.get("SECRET", "dev-secret-change-me")
 
 MODES = ("open", "lockdown", "blacklist", "whitelist")
 ONLINE_WINDOW = 180  # seconds since last_seen to count a device as online
+LOG_CAP = 300        # max blocked events and max unique visited hosts per device
 
 DEFAULT_BLOCKLISTS = [
     # StevenBlack unified + porn (~150k domains, includes the major adult sites)
@@ -169,6 +170,50 @@ def api_verify_uninstall():
     st = load_store()
     ok = bool(st["uninstall_code"]) and code == st["uninstall_code"]
     return jsonify({"ok": ok})
+
+
+@app.post("/api/log")
+def api_log():
+    """Receive batched activity from the proxy addon: blocked hosts and a
+    summary of visited (unique) hosts. Token-protected; keyed by device_id."""
+    token = request.args.get("token") or request.headers.get("X-Agent-Token")
+    if token != AGENT_TOKEN:
+        return jsonify({"error": "unauthorized"}), 401
+    data = request.get_json(silent=True) or {}
+    device_id = (data.get("device_id") or "").strip()
+    if not device_id or not SAFE_ID.match(device_id):
+        return jsonify({"error": "bad device_id"}), 400
+    st = load_store()
+    dev = st["devices"].get(device_id)
+    if not dev:
+        return jsonify({"error": "unknown device"}), 404
+    now = int(time.time())
+
+    blocks = dev.setdefault("log_blocks", [])
+    for h in (data.get("blocked") or [])[:300]:
+        h = str(h).lower()[:120].strip()
+        if h:
+            blocks.append([now, h])
+    if len(blocks) > LOG_CAP:
+        del blocks[:len(blocks) - LOG_CAP]
+
+    visited = dev.setdefault("log_visited", {})
+    for h in (data.get("visited") or [])[:1000]:
+        h = str(h).lower()[:120].strip()
+        if not h:
+            continue
+        e = visited.get(h)
+        if e:
+            e[0], e[1] = now, e[1] + 1
+        else:
+            visited[h] = [now, 1]
+    if len(visited) > LOG_CAP:
+        oldest = sorted(visited.items(), key=lambda kv: kv[1][0])
+        for h, _ in oldest[:len(visited) - LOG_CAP]:
+            visited.pop(h, None)
+
+    save_store(st)
+    return jsonify({"ok": True})
 
 
 @app.get("/agent.py")
@@ -329,6 +374,37 @@ def device_save(device_id):
     return redirect(url_for("device", device_id=device_id))
 
 
+@app.get("/device/<device_id>/log")
+@login_required
+def device_log(device_id):
+    st = load_store()
+    d = st["devices"].get(device_id)
+    if not d:
+        return redirect(url_for("index"))
+    now = int(time.time())
+    blocks = [{"host": h, "ago": human_ago(now - ts)}
+              for ts, h in reversed(d.get("log_blocks", []))]
+    visited = sorted(d.get("log_visited", {}).items(),
+                     key=lambda kv: kv[1][0], reverse=True)
+    visited = [{"host": h, "count": v[1], "ago": human_ago(now - v[0])}
+               for h, v in visited]
+    return render_template_string(
+        LOG_HTML, did=device_id, name=d.get("name") or device_id,
+        blocks=blocks, visited=visited, version=APP_VERSION)
+
+
+@app.post("/device/<device_id>/log/clear")
+@login_required
+def device_log_clear(device_id):
+    st = load_store()
+    d = st["devices"].get(device_id)
+    if d:
+        d["log_blocks"] = []
+        d["log_visited"] = {}
+        save_store(st)
+    return redirect(url_for("device_log", device_id=device_id))
+
+
 @app.post("/device/<device_id>/delete")
 @login_required
 def device_delete(device_id):
@@ -442,7 +518,8 @@ INDEX_HTML = """<!doctype html><html dir="rtl" lang="he"><head>
 DEVICE_HTML = """<!doctype html><html dir="rtl" lang="he"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>filter1 — {{d.name}}</title><style>__CSS__</style></head><body><div class="wrap">
- <div class="bar"><h1>🖥️ {{d.name}}</h1><a href="/">← כל המחשבים</a></div>
+ <div class="bar"><h1>🖥️ {{d.name}}</h1>
+  <span><a href="/device/{{did}}/log">📄 יומן פעילות</a> · <a href="/">← כל המחשבים</a></span></div>
  <p class="meta">שם מארח: {{d.hostname}} · מזהה: {{did}}</p>
  <form method="post" action="/device/{{did}}/save">
   <div class="field">
@@ -492,11 +569,48 @@ DEVICE_HTML = """<!doctype html><html dir="rtl" lang="he"><head>
  <div class="v">גרסה {{version}}</div>
 </div></body></html>"""
 
+LOG_HTML = """<!doctype html><html dir="rtl" lang="he"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>filter1 — יומן {{name}}</title><style>__CSS__
+ table{width:100%;border-collapse:collapse;margin:8px 0}
+ th,td{text-align:right;padding:8px 10px;border-bottom:1px solid #26324a;font-size:14px}
+ th{color:#94a3b8;font-weight:600}
+ td.host{font-family:monospace;direction:ltr;text-align:left}
+ .cnt{color:#94a3b8}
+ .tag{color:#f87171}
+ .cols{display:grid;grid-template-columns:1fr;gap:20px}
+ .scroll{max-height:60vh;overflow:auto;border:1px solid #26324a;border-radius:10px}
+</style></head><body><div class="wrap">
+ <div class="bar"><h1>📄 יומן — {{name}}</h1>
+  <span><a href="/device/{{did}}">← חזרה למחשב</a></span></div>
+ <div class="cols">
+  <div>
+   <h3>🛡️ אתרים שנחסמו ({{blocks|length}})</h3>
+   {% if not blocks %}<p class="meta">אין חסימות עדיין.</p>{% else %}
+   <div class="scroll"><table><tr><th>אתר</th><th>מתי</th></tr>
+    {% for b in blocks %}<tr><td class="host tag">{{b.host}}</td><td>{{b.ago}}</td></tr>{% endfor %}
+   </table></div>{% endif %}
+  </div>
+  <div>
+   <h3>🌐 אתרים שנגלשו — תמצית ({{visited|length}})</h3>
+   {% if not visited %}<p class="meta">אין עדיין.</p>{% else %}
+   <div class="scroll"><table><tr><th>אתר</th><th>פעמים</th><th>לאחרונה</th></tr>
+    {% for v in visited %}<tr><td class="host">{{v.host}}</td><td class="cnt">{{v.count}}</td><td>{{v.ago}}</td></tr>{% endfor %}
+   </table></div>{% endif %}
+  </div>
+ </div>
+ <form method="post" action="/device/{{did}}/log/clear" style="margin-top:16px"
+       onsubmit="return confirm('לנקות את היומן?')">
+  <button type="submit" class="gray">נקה יומן</button></form>
+ <div class="v">גרסה {{version}} · היומן מתעדכן ממחשבים במצב פרוקסי</div>
+</div></body></html>"""
+
 # Inject the shared CSS. Using str.replace (not %-formatting) so the templates
 # can contain Jinja {% ... %} blocks and CSS % units without conflict.
 LOGIN_HTML = LOGIN_HTML.replace("__CSS__", CSS)
 INDEX_HTML = INDEX_HTML.replace("__CSS__", CSS)
 DEVICE_HTML = DEVICE_HTML.replace("__CSS__", CSS)
+LOG_HTML = LOG_HTML.replace("__CSS__", CSS)
 
 
 # One-line PowerShell installer, served by /install.ps1 with __SERVER__ and

@@ -29,6 +29,7 @@ from mitmproxy import http
 
 POLL_SECONDS = 60
 BLOCKLIST_REFRESH = 3600  # re-download public blocklists at most this often
+FLUSH_SECONDS = 20        # how often to send batched activity to the server
 
 # talk to the control server and blocklists DIRECTLY, never through the system
 # proxy (which is this very process) — otherwise the addon's own requests loop
@@ -88,6 +89,10 @@ class Policy:
         self.token = ""
         self.device_id = "proxy"
         self.control_host = ""
+        # batched activity (deduped within each flush window)
+        self.ev_lock = threading.Lock()
+        self.ev_blocked = set()
+        self.ev_visited = set()
 
     def load_local(self):
         cfg_path = find_file("filter1.cfg")
@@ -185,6 +190,35 @@ class Policy:
         parts = name.split(".")
         return any(".".join(parts[i:]) in domain_set for i in range(len(parts)))
 
+    def record(self, host, blocked):
+        host = (host or "").lower().rstrip(".")
+        if not host:
+            return
+        with self.ev_lock:
+            (self.ev_blocked if blocked else self.ev_visited).add(host)
+
+    def report_loop(self):
+        while True:
+            time.sleep(FLUSH_SECONDS)
+            with self.ev_lock:
+                blocked = list(self.ev_blocked)
+                visited = list(self.ev_visited)
+                self.ev_blocked.clear()
+                self.ev_visited.clear()
+            if (not blocked and not visited) or not self.server or not self.token:
+                continue
+            try:
+                payload = json.dumps({
+                    "device_id": self.device_id,
+                    "blocked": blocked, "visited": visited}).encode("utf-8")
+                req = urllib.request.Request(
+                    f"{self.server}/api/log?token={self.token}", data=payload,
+                    headers={"Content-Type": "application/json",
+                             "User-Agent": "filter1"})
+                DIRECT.open(req, timeout=15).read()
+            except Exception as e:
+                log(f"report failed: {e}")
+
     def allowed(self, host):
         host = (host or "").lower().rstrip(".")
         with self.lock:
@@ -223,9 +257,14 @@ def load(loader):
     log(f"addon started: server={POLICY.server} device={POLICY.device_id} "
         f"control_host={POLICY.control_host}")
     threading.Thread(target=POLICY.poll_loop, daemon=True).start()
+    threading.Thread(target=POLICY.report_loop, daemon=True).start()
 
 
 def request(flow: http.HTTPFlow):
-    if not POLICY.allowed(flow.request.pretty_host):
+    host = flow.request.pretty_host
+    if not POLICY.allowed(host):
+        POLICY.record(host, True)
         flow.response = http.Response.make(
             403, BLOCK_HTML, {"Content-Type": "text/html; charset=utf-8"})
+    else:
+        POLICY.record(host, False)
