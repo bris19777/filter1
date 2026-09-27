@@ -88,38 +88,48 @@ foreach ($ap in $vpnApps) {
 # Only enable the proxy layer if the agent proved it can reach the server. If
 # not, we must NOT route the browser through a proxy, or it would be cut off.
 if ($agentOk) {
-  # generate the mitmproxy root CA by running mitmdump briefly on a temp port
   New-Item -ItemType Directory -Force -Path $Conf | Out-Null
-  $genArgs = "-c `"import sys;from mitmproxy.tools.main import mitmdump;sys.argv=['mitmdump','--set','confdir=$Conf','--listen-port','8099','-q'];mitmdump()`""
-  $p = Start-Process $py -ArgumentList $genArgs -PassThru -WindowStyle Hidden
-  Start-Sleep -Seconds 8
-  Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-  $ca = Join-Path $Conf "mitmproxy-ca-cert.cer"
-  if (-not (Test-Path $ca)) { $ca = Join-Path $Conf "mitmproxy-ca-cert.pem" }
-  if (Test-Path $ca) {
-    Import-Certificate -FilePath $ca -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
-    NK "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\Certificates"
-    Set-ItemProperty "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\Certificates" -Name ImportEnterpriseRoots -Value 1 -Type DWord
-  }
 
-  # force browsers through the proxy via BROWSER POLICY only (NOT the system-wide
-  # WinINET proxy, which makes Windows block app launches during its zone checks)
-  New-NetFirewallRule -DisplayName "filter1 block QUIC" -Group "filter1" -Direction Outbound -Action Block -Protocol UDP -RemotePort 443 -ErrorAction SilentlyContinue | Out-Null
-  foreach ($b in @("HKLM:\SOFTWARE\Policies\Google\Chrome","HKLM:\SOFTWARE\Policies\Microsoft\Edge")) {
-    New-Item -Path $b -Force | Out-Null
-    Set-ItemProperty -Path $b -Name QuicAllowed -Value 0 -Type DWord
-    Set-ItemProperty -Path $b -Name ProxyMode -Value "fixed_servers"
-    Set-ItemProperty -Path $b -Name ProxyServer -Value "127.0.0.1:8080"
-  }
-
-  # run the proxy as a SYSTEM task
+  # 1. start the proxy task first — run_proxy.py generates the CA on first run
   Stop-ScheduledTask -TaskName "filter1-proxy" -ErrorAction SilentlyContinue | Out-Null
   Get-Process mitmdump -ErrorAction SilentlyContinue | Stop-Process -Force
   $a2 = New-ScheduledTaskAction -Execute $pyw -Argument "`"$runProxy`""
   $a2t = New-ScheduledTaskTrigger -AtStartup
   Register-ScheduledTask -TaskName "filter1-proxy" -Action $a2 -Trigger $a2t -Principal $pr -Settings $st -Force | Out-Null
   Start-ScheduledTask -TaskName "filter1-proxy"
-  Write-Host "filter1 installed: DNS agent + proxy running."
+
+  # 2. wait for the root CA to be generated, then trust it machine-wide
+  $ca = $null
+  foreach ($i in 1..20) {
+    Start-Sleep -Seconds 1
+    foreach ($n in @("mitmproxy-ca-cert.cer","mitmproxy-ca-cert.pem")) {
+      $c = Join-Path $Conf $n
+      if (Test-Path $c) { $ca = $c; break }
+    }
+    if ($ca) { break }
+  }
+  if ($ca) {
+    Import-Certificate -FilePath $ca -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
+    NK "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\Certificates"
+    Set-ItemProperty "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\Certificates" -Name ImportEnterpriseRoots -Value 1 -Type DWord
+    "cert installed: $ca" | Out-File $selftest -Append
+  } else {
+    "WARNING: mitmproxy CA not generated; browser proxy policy NOT applied" | Out-File $selftest -Append
+  }
+
+  # 3. only route browsers through the proxy AFTER the CA is trusted
+  if ($ca) {
+    New-NetFirewallRule -DisplayName "filter1 block QUIC" -Group "filter1" -Direction Outbound -Action Block -Protocol UDP -RemotePort 443 -ErrorAction SilentlyContinue | Out-Null
+    foreach ($b in @("HKLM:\SOFTWARE\Policies\Google\Chrome","HKLM:\SOFTWARE\Policies\Microsoft\Edge")) {
+      New-Item -Path $b -Force | Out-Null
+      Set-ItemProperty -Path $b -Name QuicAllowed -Value 0 -Type DWord
+      Set-ItemProperty -Path $b -Name ProxyMode -Value "fixed_servers"
+      Set-ItemProperty -Path $b -Name ProxyServer -Value "127.0.0.1:8080"
+    }
+    Write-Host "filter1 installed: DNS agent + proxy running."
+  } else {
+    Write-Host "filter1 installed: DNS agent running; proxy started but cert missing."
+  }
 } else {
   "PROXY SKIPPED: agent could not reach the server (see errors above)." | Out-File $selftest -Append
   Write-Host "filter1 installed: DNS agent only (proxy skipped - server unreachable)."
