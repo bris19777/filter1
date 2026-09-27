@@ -90,10 +90,12 @@ foreach ($ap in $vpnApps) {
 if ($agentOk) {
   New-Item -ItemType Directory -Force -Path $Conf | Out-Null
 
-  # 1. start the proxy task first — run_proxy.py generates the CA on first run
+  # 1. start the proxy task first — run_proxy.py generates the CA on first run.
+  #    Use python.exe (NOT pythonw): mitmdump needs a real stdout or it exits.
+  #    As a SYSTEM task in session 0 the console is never visible to the user.
   Stop-ScheduledTask -TaskName "filter1-proxy" -ErrorAction SilentlyContinue | Out-Null
-  Get-Process mitmdump -ErrorAction SilentlyContinue | Stop-Process -Force
-  $a2 = New-ScheduledTaskAction -Execute $pyw -Argument "`"$runProxy`""
+  Get-Process mitmdump, python -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$InstallDir*" } | Stop-Process -Force -ErrorAction SilentlyContinue
+  $a2 = New-ScheduledTaskAction -Execute $py -Argument "`"$runProxy`""
   $a2t = New-ScheduledTaskTrigger -AtStartup
   Register-ScheduledTask -TaskName "filter1-proxy" -Action $a2 -Trigger $a2t -Principal $pr -Settings $st -Force | Out-Null
   Start-ScheduledTask -TaskName "filter1-proxy"

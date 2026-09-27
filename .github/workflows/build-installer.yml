@@ -26,7 +26,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path installer\payload | Out-Null
           Copy-Item $prefix installer\payload\py -Recurse
           installer\payload\py\python.exe -m pip install --upgrade pip
-          installer\payload\py\python.exe -m pip install dnslib mitmproxy
+          installer\payload\py\python.exe -m pip install dnslib mitmproxy certifi
           Copy-Item agent\agent.py            installer\payload\agent.py
           Copy-Item proxy\filter_addon.py     installer\payload\filter_addon.py
           Copy-Item installer\run_proxy.py    installer\payload\
