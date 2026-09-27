@@ -190,6 +190,30 @@ def serve_installer():
     return Response(script, mimetype="text/plain")
 
 
+@app.get("/filter_addon.py")
+def serve_filter_addon():
+    """Serve the mitmproxy filtering addon for the proxy one-line installer."""
+    for p in (os.path.join(BASE, "proxy_filter_addon.py"),
+              os.path.join(BASE, "..", "proxy", "filter_addon.py")):
+        if os.path.exists(p):
+            with open(p, "r", encoding="utf-8") as f:
+                return Response(f.read(), mimetype="text/plain")
+    return "filter addon not found", 404
+
+
+@app.get("/install-proxy.ps1")
+def serve_proxy_installer():
+    """Return the self-elevating installer for the ADVANCED mitmproxy content
+    filter. Deliberately a separate one-liner (not part of /install.ps1) because
+    it is invasive. Usage on the client (admin PowerShell):
+        iex (irm 'https://<server>/install-proxy.ps1?token=<AGENT_TOKEN>')
+    """
+    token = (request.args.get("token") or "").strip().strip("<>\"' ")
+    base = request.host_url.rstrip("/")
+    script = PROXY_INSTALLER_PS1.replace("__SERVER__", base).replace("__TOKEN__", token)
+    return Response(script, mimetype="text/plain")
+
+
 @app.get("/healthz")
 def healthz():
     return "ok", 200
@@ -573,6 +597,109 @@ foreach ($a in $vpnApps) {
 }
 
 Write-Host "Done. The machine will appear in your control panel within a minute."
+'''
+
+
+# One-line PowerShell installer for the ADVANCED mitmproxy content filter,
+# served by /install-proxy.ps1. Invasive: keep it a separate, deliberate step.
+PROXY_INSTALLER_PS1 = r'''$ErrorActionPreference = "Stop"
+$Server = "__SERVER__"
+$Token  = "__TOKEN__"
+
+$admin = ([Security.Principal.WindowsPrincipal] `
+  [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+  [Security.Principal.WindowsBuiltinRole]::Administrator)
+if (-not $admin) {
+  Write-Host "Requesting administrator privileges..."
+  $cmd = "iex (irm '$Server/install-proxy.ps1?token=$Token')"
+  Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile","-Command",$cmd
+  return
+}
+
+$InstallDir = Join-Path $env:ProgramFiles "filter1"
+$Conf = Join-Path $env:ProgramData "filter1\mitmproxy"
+
+function Get-PyArch($py) {
+  try { return (& $py -c "import platform;print(platform.machine())" 2>$null).Trim() } catch { return "" }
+}
+function All-Pythons {
+  $c = @()
+  Get-Command python.exe -All -ErrorAction SilentlyContinue | ForEach-Object { $c += $_.Source }
+  $c += @(
+    "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
+    "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe",
+    "C:\Program Files\Python312\python.exe","C:\Program Files\Python311\python.exe")
+  return $c | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
+}
+function Find-X64Python {
+  foreach ($p in (All-Pythons)) { if ((Get-PyArch $p) -eq "AMD64") { return $p } }
+  return $null
+}
+
+Write-Host "== filter1 mitmproxy content filter =="
+$py = Find-X64Python
+if (-not $py) {
+  Write-Host "Installing 64-bit Python via winget..."
+  winget install -e --id Python.Python.3.12 --architecture x64 --scope machine `
+    --accept-source-agreements --accept-package-agreements
+  $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine")
+  $py = Find-X64Python
+}
+if (-not $py) { Write-Error "Could not find or install 64-bit Python."; return }
+Write-Host "Using x64 Python: $py"
+
+& $py -m pip install --upgrade pip | Out-Null
+& $py -m pip install mitmproxy | Out-Null
+$mitm = Join-Path (Split-Path $py) "Scripts\mitmdump.exe"
+if (-not (Test-Path $mitm)) { $mitm = Join-Path (Split-Path $py) "mitmdump.exe" }
+if (-not (Test-Path $mitm)) { Write-Error "mitmdump.exe not found after install."; return }
+
+New-Item -ItemType Directory -Force -Path $Conf | Out-Null
+$p = Start-Process $mitm -ArgumentList "--set","confdir=$Conf","--listen-port","8080","-q" -PassThru -WindowStyle Hidden
+Start-Sleep -Seconds 6
+Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+$ca = Join-Path $Conf "mitmproxy-ca-cert.cer"
+if (-not (Test-Path $ca)) { $ca = Join-Path $Conf "mitmproxy-ca-cert.pem" }
+if (-not (Test-Path $ca)) { Write-Error "CA not generated. Check mitmdump ran."; return }
+
+Import-Certificate -FilePath $ca -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
+New-Item -Path "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\Certificates" -Force | Out-Null
+Set-ItemProperty "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\Certificates" -Name ImportEnterpriseRoots -Value 1 -Type DWord
+
+New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+$addon = Join-Path $InstallDir "filter_addon.py"
+Invoke-WebRequest -Uri "$Server/filter_addon.py" -OutFile $addon
+
+$is = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings"
+New-Item $is -Force | Out-Null
+Set-ItemProperty $is -Name ProxyEnable -Value 1 -Type DWord
+Set-ItemProperty $is -Name ProxyServer -Value "127.0.0.1:8080"
+Set-ItemProperty $is -Name ProxyOverride -Value "<local>"
+$pol = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\Internet Settings"
+New-Item $pol -Force | Out-Null
+Set-ItemProperty $pol -Name ProxySettingsPerUser -Value 0 -Type DWord
+$iepol = "HKLM:\SOFTWARE\Policies\Microsoft\Internet Explorer\Control Panel"
+New-Item $iepol -Force | Out-Null
+Set-ItemProperty $iepol -Name Proxy -Value 1 -Type DWord
+
+New-NetFirewallRule -DisplayName "filter1 block QUIC" -Group "filter1" -Direction Outbound -Action Block -Protocol UDP -RemotePort 443 -ErrorAction SilentlyContinue | Out-Null
+foreach ($b in @("HKLM:\SOFTWARE\Policies\Google\Chrome","HKLM:\SOFTWARE\Policies\Microsoft\Edge")) {
+  New-Item -Path $b -Force | Out-Null
+  Set-ItemProperty -Path $b -Name QuicAllowed -Value 0 -Type DWord
+}
+
+$pargs = "--set confdir=$Conf -s `"$addon`" --listen-host 127.0.0.1 --listen-port 8080 -q"
+$action = New-ScheduledTaskAction -Execute $mitm -Argument $pargs
+$trigger = New-ScheduledTaskTrigger -AtStartup
+$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries `
+  -DontStopIfGoingOnBatteries -RestartInterval (New-TimeSpan -Minutes 1) `
+  -RestartCount 999 -ExecutionTimeLimit ([TimeSpan]::Zero)
+Register-ScheduledTask -TaskName "filter1-proxy" -Action $action -Trigger $trigger `
+  -Principal $principal -Settings $settings -Force | Out-Null
+Start-ScheduledTask -TaskName "filter1-proxy"
+
+Write-Host "Done. mitmproxy content filter running on 127.0.0.1:8080."
 '''
 
 
