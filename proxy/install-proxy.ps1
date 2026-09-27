@@ -18,19 +18,36 @@ $InstallDir = Join-Path $env:ProgramFiles "filter1"
 $Conf = Join-Path $env:ProgramData "filter1\mitmproxy"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-function Find-Python {
-  foreach ($p in @(
+function Get-PyArch($py) {
+  try { return (& $py -c "import platform;print(platform.machine())" 2>$null).Trim() } catch { return "" }
+}
+function All-Pythons {
+  $c = @()
+  Get-Command python.exe -All -ErrorAction SilentlyContinue | ForEach-Object { $c += $_.Source }
+  $c += @(
     "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
-    "C:\Program Files\Python312\python.exe",
-    (Get-Command python -ErrorAction SilentlyContinue).Source)) {
-    if ($p -and (Test-Path $p)) { return $p }
-  }
+    "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe",
+    "C:\Program Files\Python312\python.exe","C:\Program Files\Python311\python.exe")
+  return $c | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
+}
+function Find-X64Python {
+  # mitmproxy needs binary wheels that may be missing for ARM64 Python, so
+  # always prefer a 64-bit (AMD64) Python, which runs under emulation on ARM.
+  foreach ($p in (All-Pythons)) { if ((Get-PyArch $p) -eq "AMD64") { return $p } }
   return $null
 }
 
 Write-Host "== filter1 mitmproxy content filter =="
-$py = Find-Python
-if (-not $py) { Write-Error "Python not found. Install the DNS agent first."; return }
+$py = Find-X64Python
+if (-not $py) {
+  Write-Host "Installing 64-bit Python via winget..."
+  winget install -e --id Python.Python.3.12 --architecture x64 --scope machine `
+    --accept-source-agreements --accept-package-agreements
+  $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine")
+  $py = Find-X64Python
+}
+if (-not $py) { Write-Error "Could not find or install 64-bit Python."; return }
+Write-Host "Using x64 Python: $py"
 
 # 1. install mitmproxy
 & $py -m pip install --upgrade pip | Out-Null

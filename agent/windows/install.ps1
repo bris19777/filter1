@@ -15,35 +15,43 @@ $ErrorActionPreference = "Stop"
 $InstallDir = Join-Path $env:ProgramFiles "filter1"
 $ScriptDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-function Find-PythonW {
-    $c = Get-Command pythonw.exe -ErrorAction SilentlyContinue
-    if ($c) { return $c.Source }
-    foreach ($p in @(
-        "$env:LOCALAPPDATA\Programs\Python\Python312\pythonw.exe",
-        "$env:LOCALAPPDATA\Programs\Python\Python311\pythonw.exe",
-        "C:\Python312\pythonw.exe", "C:\Python311\pythonw.exe")) {
-        if (Test-Path $p) { return $p }
-    }
+function Get-PyArch($py) {
+    try { return (& $py -c "import platform;print(platform.machine())" 2>$null).Trim() } catch { return "" }
+}
+function All-Pythons {
+    $c = @()
+    Get-Command python.exe -All -ErrorAction SilentlyContinue | ForEach-Object { $c += $_.Source }
+    $c += @(
+        "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
+        "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe",
+        "C:\Program Files\Python312\python.exe", "C:\Program Files\Python311\python.exe",
+        "C:\Python312\python.exe", "C:\Python311\python.exe")
+    return $c | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
+}
+function Find-X64Python {
+    # always prefer a 64-bit (AMD64) Python, even if an ARM64 one is installed
+    foreach ($p in (All-Pythons)) { if ((Get-PyArch $p) -eq "AMD64") { return $p } }
     return $null
 }
 
 Write-Host "== filter1 client installer =="
 
-# 1. Ensure Python is available (install via winget if missing).
-$pyw = Find-PythonW
-if (-not $pyw) {
-    Write-Host "Python not found. Installing via winget..."
-    winget install -e --id Python.Python.3.12 --scope machine `
+# 1. Ensure a 64-bit Python is available (install x64 via winget if missing).
+$py = Find-X64Python
+if (-not $py) {
+    Write-Host "Installing 64-bit Python via winget..."
+    winget install -e --id Python.Python.3.12 --architecture x64 --scope machine `
         --accept-source-agreements --accept-package-agreements
     $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine")
-    $pyw = Find-PythonW
+    $py = Find-X64Python
 }
-if (-not $pyw) {
-    Write-Error "Could not find or install Python. Install Python 3 manually, then re-run."
+if (-not $py) {
+    Write-Error "Could not find or install 64-bit Python. Install Python 3 (x64), then re-run."
     exit 1
 }
-$py = $pyw -replace "pythonw.exe$","python.exe"
-Write-Host "Using Python: $py"
+$pyw = $py -replace "python.exe$","pythonw.exe"
+if (-not (Test-Path $pyw)) { $pyw = $py }
+Write-Host "Using x64 Python: $py"
 
 # 2. Install the DNS library.
 & $py -m pip install --upgrade pip | Out-Null
