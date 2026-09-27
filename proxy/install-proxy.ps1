@@ -18,6 +18,9 @@ $InstallDir = Join-Path $env:ProgramFiles "filter1"
 $Conf = Join-Path $env:ProgramData "filter1\mitmproxy"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
+# create a registry key only if missing (New-Item -Force fails on existing keys)
+function NK($p) { if (-not (Test-Path $p)) { New-Item -Path $p -Force | Out-Null } }
+
 function Get-PyArch($py) {
   try {
     $v = & $py -c "import sys;print(sys.version)" 2>$null
@@ -82,7 +85,7 @@ if (-not (Test-Path $ca)) { Write-Error "CA not generated. Check mitmdump ran.";
 # 3. trust the CA machine-wide (Chrome/Edge use the Windows store)
 Import-Certificate -FilePath $ca -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
 # Firefox: trust Windows enterprise roots
-New-Item -Path "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\Certificates" -Force | Out-Null
+NK "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\Certificates"
 Set-ItemProperty "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\Certificates" -Name ImportEnterpriseRoots -Value 1 -Type DWord
 
 # 4. copy the filtering addon
@@ -92,21 +95,21 @@ $addon = Join-Path $InstallDir "filter_addon.py"
 
 # 5. force the machine through the local proxy, for all users, and lock the UI
 $is = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings"
-New-Item $is -Force | Out-Null
+NK $is
 Set-ItemProperty $is -Name ProxyEnable -Value 1 -Type DWord
 Set-ItemProperty $is -Name ProxyServer -Value "127.0.0.1:8080"
 Set-ItemProperty $is -Name ProxyOverride -Value "<local>"
 $pol = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\Internet Settings"
-New-Item $pol -Force | Out-Null
+NK $pol
 Set-ItemProperty $pol -Name ProxySettingsPerUser -Value 0 -Type DWord
 $iepol = "HKLM:\SOFTWARE\Policies\Microsoft\Internet Explorer\Control Panel"
-New-Item $iepol -Force | Out-Null
+NK $iepol
 Set-ItemProperty $iepol -Name Proxy -Value 1 -Type DWord
 
 # 6. block QUIC so browsers fall back to interceptable TCP
 New-NetFirewallRule -DisplayName "filter1 block QUIC" -Group "filter1" -Direction Outbound -Action Block -Protocol UDP -RemotePort 443 -ErrorAction SilentlyContinue | Out-Null
 foreach ($b in @("HKLM:\SOFTWARE\Policies\Google\Chrome","HKLM:\SOFTWARE\Policies\Microsoft\Edge")) {
-  New-Item -Path $b -Force | Out-Null
+  NK $b
   Set-ItemProperty -Path $b -Name QuicAllowed -Value 0 -Type DWord
 }
 

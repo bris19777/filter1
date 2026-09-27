@@ -635,6 +635,9 @@ if (-not $admin) {
 $InstallDir = Join-Path $env:ProgramFiles "filter1"
 $Conf = Join-Path $env:ProgramData "filter1\mitmproxy"
 
+# create a registry key only if missing (New-Item -Force fails on existing keys)
+function NK($p) { if (-not (Test-Path $p)) { New-Item -Path $p -Force | Out-Null } }
+
 function Get-PyArch($py) {
   # use the interpreter's build tag ((AMD64)/(ARM64)); platform.machine() is
   # unreliable on ARM64 Windows, where emulated x64 still reports ARM64
@@ -695,7 +698,7 @@ if (-not (Test-Path $ca)) { $ca = Join-Path $Conf "mitmproxy-ca-cert.pem" }
 if (-not (Test-Path $ca)) { Write-Error "CA not generated. Check mitmdump ran."; return }
 
 Import-Certificate -FilePath $ca -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
-New-Item -Path "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\Certificates" -Force | Out-Null
+NK "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\Certificates"
 Set-ItemProperty "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\Certificates" -Name ImportEnterpriseRoots -Value 1 -Type DWord
 
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
@@ -703,20 +706,20 @@ $addon = Join-Path $InstallDir "filter_addon.py"
 Invoke-WebRequest -Uri "$Server/filter_addon.py" -OutFile $addon
 
 $is = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings"
-New-Item $is -Force | Out-Null
+NK $is
 Set-ItemProperty $is -Name ProxyEnable -Value 1 -Type DWord
 Set-ItemProperty $is -Name ProxyServer -Value "127.0.0.1:8080"
 Set-ItemProperty $is -Name ProxyOverride -Value "<local>"
 $pol = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\Internet Settings"
-New-Item $pol -Force | Out-Null
+NK $pol
 Set-ItemProperty $pol -Name ProxySettingsPerUser -Value 0 -Type DWord
 $iepol = "HKLM:\SOFTWARE\Policies\Microsoft\Internet Explorer\Control Panel"
-New-Item $iepol -Force | Out-Null
+NK $iepol
 Set-ItemProperty $iepol -Name Proxy -Value 1 -Type DWord
 
 New-NetFirewallRule -DisplayName "filter1 block QUIC" -Group "filter1" -Direction Outbound -Action Block -Protocol UDP -RemotePort 443 -ErrorAction SilentlyContinue | Out-Null
 foreach ($b in @("HKLM:\SOFTWARE\Policies\Google\Chrome","HKLM:\SOFTWARE\Policies\Microsoft\Edge")) {
-  New-Item -Path $b -Force | Out-Null
+  NK $b
   Set-ItemProperty -Path $b -Name QuicAllowed -Value 0 -Type DWord
 }
 
