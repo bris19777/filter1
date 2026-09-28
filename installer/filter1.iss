@@ -13,7 +13,7 @@
 [Setup]
 AppId={{B5D0F17A-11C2-4E8B-9E4A-F117E1000001}
 AppName=filter1
-AppVersion=1.1.6
+AppVersion=1.1.7
 AppPublisher=BSD
 DefaultDirName={commonpf}\filter1
 DisableDirPage=yes
