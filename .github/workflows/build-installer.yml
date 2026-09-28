@@ -38,6 +38,9 @@ jobs:
           Copy-Item installer\unharden-apps.ps1  installer\payload\
           Copy-Item installer\harden-apps.bat    installer\payload\
           Copy-Item installer\unharden-apps.bat  installer\payload\
+          # local status / diagnostics tool
+          Copy-Item installer\status.py          installer\payload\
+          Copy-Item installer\filter1-status.bat installer\payload\
           # bundle the VC++ runtime so the private Python starts on clean machines
           Invoke-WebRequest "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile installer\payload\vc_redist.x64.exe
 
