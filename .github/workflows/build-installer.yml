@@ -33,6 +33,11 @@ jobs:
           Copy-Item installer\setup-tasks.ps1 installer\payload\
           Copy-Item installer\uninstall-all.ps1 installer\payload\
           Copy-Item installer\verify-uninstall.ps1 installer\payload\
+          # optional, admin-run VPN app-blocking (kept out of the default install)
+          Copy-Item installer\harden-apps.ps1    installer\payload\
+          Copy-Item installer\unharden-apps.ps1  installer\payload\
+          Copy-Item installer\harden-apps.bat    installer\payload\
+          Copy-Item installer\unharden-apps.bat  installer\payload\
           # bundle the VC++ runtime so the private Python starts on clean machines
           Invoke-WebRequest "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile installer\payload\vc_redist.x64.exe
 
@@ -48,6 +53,38 @@ jobs:
             "/DMyToken=${{ secrets.AGENT_TOKEN }}" `
             "/DMyServer=$server" `
             installer\filter1.iss
+
+      - name: Sign installer (Authenticode)
+        shell: pwsh
+        env:
+          SIGN_PFX_BASE64: ${{ secrets.SIGN_PFX_BASE64 }}
+          SIGN_PFX_PASSWORD: ${{ secrets.SIGN_PFX_PASSWORD }}
+        run: |
+          # Code signing is the supported fix for SmartScreen warnings and for
+          # Defender flagging a freshly downloaded, low-reputation installer. It
+          # runs only when a signing certificate is configured as repo secrets;
+          # without them the build still produces a working (unsigned) installer.
+          if (-not $env:SIGN_PFX_BASE64) {
+            Write-Host "No SIGN_PFX_BASE64 secret set; leaving the installer unsigned."
+            exit 0
+          }
+          $exe = "installer\Output\filter1-setup.exe"
+          $pfx = Join-Path $env:RUNNER_TEMP "filter1-sign.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGN_PFX_BASE64))
+          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -like "*\x64\*" } | Sort-Object FullName | Select-Object -Last 1
+          if (-not $signtool) { throw "signtool.exe not found on the runner" }
+          try {
+            & $signtool.FullName sign /f $pfx /p $env:SIGN_PFX_PASSWORD `
+              /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $exe
+            if ($LASTEXITCODE -ne 0) { throw "signtool sign failed ($LASTEXITCODE)" }
+            & $signtool.FullName verify /pa $exe
+            if ($LASTEXITCODE -ne 0) { throw "signtool verify failed ($LASTEXITCODE)" }
+            Write-Host "Installer signed and verified."
+          }
+          finally {
+            Remove-Item $pfx -Force -ErrorAction SilentlyContinue
+          }
 
       - uses: actions/upload-artifact@v4
         with:
