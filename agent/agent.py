@@ -107,6 +107,10 @@ class State:
         self.have_config = False      # True once we successfully fetched config
         self.layers = "both"          # dns | proxy | both (which layer enforces)
         self.upstreams = list(FALLBACK_UPSTREAMS)  # real DNS to forward to
+        # last-poll health, surfaced in status.json for local diagnostics
+        self.last_poll_ok = False
+        self.last_error = ""
+        self.last_poll_ts = 0.0
         # the control server's own host is always allowed so the agent can poll
         host = urlparse(self.server_url).hostname
         self.control_host = host.lower() if host else None
@@ -250,6 +254,39 @@ def config_url(state, token, device_id, name, count=None, amode=None):
     return f"{state.server_url}/api/config?{q}"
 
 
+def write_status(state, device_id, name):
+    """Persist a local snapshot of why the agent is or isn't working, so the
+    status tool (and the parent) can see, e.g., that the mitmproxy cert exists
+    but the device never registered because the server poll is failing."""
+    try:
+        import json
+        with state.lock:
+            data = {
+                "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "server": state.server_url,
+                "device_id": device_id,
+                "name": name,
+                "server_reachable": state.last_poll_ok,
+                "registered": bool(state.last_poll_ok and state.have_config),
+                "last_error": state.last_error,
+                "mode": state.mode if state.have_config else None,
+                "whitelist_count": len(state.whitelist),
+                "blocked_count": len(state.blocked),
+                "dns_listen_ipv4": True,
+                "dns_listen_ipv6": LISTEN_V6,
+                "dns_taken_over": DNS_TAKEN_OVER,
+                "upstreams": list(state.upstreams),
+            }
+        d = id_dir()
+        os.makedirs(d, exist_ok=True)
+        tmp = os.path.join(d, "status.json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, os.path.join(d, "status.json"))
+    except Exception as e:
+        print(f"[status] could not write status.json: {e}")
+
+
 def poll_loop(state, token, device_id, name):
     while True:
         # report the currently applied status so the panel can show readiness
@@ -262,10 +299,19 @@ def poll_loop(state, token, device_id, name):
                 import json
                 cfg = json.loads(r.read().decode("utf-8"))
             state.apply(cfg)
+            with state.lock:
+                state.last_poll_ok = True
+                state.last_error = ""
+                state.last_poll_ts = time.time()
             print(f"[poll] id={device_id} mode={state.mode} "
                   f"whitelist={len(state.whitelist)} blocked={len(state.blocked)}")
         except Exception as e:
+            with state.lock:
+                state.last_poll_ok = False
+                state.last_error = str(e)
+                state.last_poll_ts = time.time()
             print(f"[poll] failed: {e}")
+        write_status(state, device_id, name)
         time.sleep(POLL_SECONDS)
 
 
@@ -345,6 +391,10 @@ def upstream_ok(state):
 # system's IPv6 DNS at ourselves (otherwise we'd break IPv6 DNS resolution).
 LISTEN_V6 = False
 
+# Whether we currently hold the system DNS (False when we've failed open because
+# no upstream was reachable). Surfaced in status.json.
+DNS_TAKEN_OVER = False
+
 
 def set_system_dns_all():
     """Point the system DNS at our loopback resolver, on physical adapters only.
@@ -373,6 +423,7 @@ def dns_guard_loop(state):
     """Keep the system DNS pointed at us WHILE we can still reach a real
     upstream. If every upstream becomes unreachable, revert to automatic DNS so
     the machine is never cut off (fail-open)."""
+    global DNS_TAKEN_OVER
     if not IS_WINDOWS:
         return
     fails = 0
@@ -389,6 +440,7 @@ def dns_guard_loop(state):
                       "(fail-open)")
                 reset_system_dns_all()
                 taken_over = False
+        DNS_TAKEN_OVER = taken_over
         time.sleep(DNS_ASSERT_SECONDS)
 
 

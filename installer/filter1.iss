@@ -13,7 +13,7 @@
 [Setup]
 AppId={{B5D0F17A-11C2-4E8B-9E4A-F117E1000001}
 AppName=filter1
-AppVersion=1.1.4
+AppVersion=1.1.5
 AppPublisher=BSD
 DefaultDirName={commonpf}\filter1
 DisableDirPage=yes
@@ -27,6 +27,12 @@ WizardStyle=modern
 
 [Files]
 Source: "payload\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
+
+[Icons]
+; Start Menu shortcut so the parent can double-click to see local status / why
+; something isn't working (server registration, DNS, proxy, certificate).
+Name: "{commonprograms}\filter1\מצב filter1 (אבחון)"; Filename: "{app}\filter1-status.bat"
+Name: "{commonprograms}\filter1\הסרת filter1"; Filename: "{uninstallexe}"
 
 [Run]
 Filename: "powershell.exe"; \
