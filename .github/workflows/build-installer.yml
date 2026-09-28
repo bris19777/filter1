@@ -92,6 +92,14 @@ jobs:
             & $signtool.FullName sign /f $pfx /p $env:SIGN_PFX_PASSWORD `
               /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $exe
             if ($LASTEXITCODE -ne 0) { throw "signtool sign failed ($LASTEXITCODE)" }
+            # A self-signed signer does not chain to a root the runner already
+            # trusts, so `verify /pa` would fail with "terminated in a root
+            # certificate which is not trusted". Trust our public cert on the
+            # runner first (clients trust it via setup-tasks.ps1). No-op for a
+            # CA-issued cert, where codesign.cer is absent.
+            if (Test-Path installer\codesign.cer) {
+              certutil -addstore -f Root installer\codesign.cer | Out-Null
+            }
             & $signtool.FullName verify /pa $exe
             if ($LASTEXITCODE -ne 0) { throw "signtool verify failed ($LASTEXITCODE)" }
             Write-Host "Installer signed and verified."
