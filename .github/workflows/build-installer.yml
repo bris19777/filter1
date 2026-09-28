@@ -76,7 +76,15 @@ jobs:
           }
           $exe = "installer\Output\filter1-setup.exe"
           $pfx = Join-Path $env:RUNNER_TEMP "filter1-sign.pfx"
-          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGN_PFX_BASE64))
+          # Strip anything that isn't a base64 character. Pasting the secret can
+          # introduce line wraps, stray spaces, a BOM or a non-breaking space that
+          # break FromBase64String; base64 itself only uses [A-Za-z0-9+/=].
+          $b64 = ($env:SIGN_PFX_BASE64 -replace '[^A-Za-z0-9+/=]', '')
+          try {
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($b64))
+          } catch {
+            throw "SIGN_PFX_BASE64 is not valid base64 after cleanup (length $($b64.Length)). Re-copy the whole one-line value into the secret."
+          }
           $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
             Where-Object { $_.FullName -like "*\x64\*" } | Sort-Object FullName | Select-Object -Last 1
           if (-not $signtool) { throw "signtool.exe not found on the runner" }
