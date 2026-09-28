@@ -214,6 +214,32 @@ class Resolver(BaseResolver):
             return reply
 
 
+def start_ipv6_resolver(resolver, port):
+    """Best-effort: also listen on [::1] so the system's IPv6 DNS can point at us
+    and IPv6 queries can't bypass the filter. Returns True if it started.
+
+    dnslib's default server is IPv4-only, so we hand it a small AF_INET6 UDP
+    server subclass. If the IPv6 stack is disabled the bind fails and we simply
+    stay IPv4-only (and won't touch the machine's IPv6 DNS)."""
+    if not IS_WINDOWS:
+        return False
+    try:
+        import socketserver
+        from dnslib.server import DNSServer
+
+        class _UDPServerV6(socketserver.ThreadingUDPServer):
+            allow_reuse_address = True
+            daemon_threads = True
+            address_family = socket.AF_INET6
+
+        s6 = DNSServer(resolver, port=port, address="::1", server=_UDPServerV6)
+        s6.start_thread()
+        return True
+    except Exception as e:
+        print(f"[dns] IPv6 listener not started ({e}); staying IPv4-only")
+        return False
+
+
 def config_url(state, token, device_id, name, count=None, amode=None):
     d = {"token": token, "device_id": device_id, "name": name}
     if count is not None:
@@ -261,10 +287,14 @@ def _ps(cmd):
 
 
 def read_current_dns():
-    """The machine's current IPv4 DNS servers, excluding our own loopback."""
+    """The machine's current IPv4 DNS servers, excluding our own loopback.
+
+    Scoped to physical, connected adapters so we don't pick up (or fight) the
+    DNS of virtual adapters (Hyper-V/VMware/VirtualBox/WSL/VPN)."""
     if not IS_WINDOWS:
         return []
-    out = _ps("(Get-DnsClientServerAddress -AddressFamily IPv4)."
+    out = _ps("(Get-NetAdapter -Physical | Where-Object {$_.Status -eq 'Up'} | "
+              "Get-DnsClientServerAddress -AddressFamily IPv4)."
               "ServerAddresses -join ','")
     servers = [s.strip() for s in out.replace("\n", ",").split(",") if s.strip()]
     seen = []
@@ -311,17 +341,31 @@ def upstream_ok(state):
     return False
 
 
-def set_system_dns_all(addr):
+# True once we also manage to listen on [::1]; only then do we point the
+# system's IPv6 DNS at ourselves (otherwise we'd break IPv6 DNS resolution).
+LISTEN_V6 = False
+
+
+def set_system_dns_all():
+    """Point the system DNS at our loopback resolver, on physical adapters only.
+
+    Virtual adapters (Hyper-V/VMware/VirtualBox/WSL/VPN) are left alone so we
+    don't break host-only networking or fight other DNS managers. When an IPv6
+    listener is up we also set the IPv6 DNS to ::1 so IPv6 queries can't bypass
+    the filter."""
     if not IS_WINDOWS:
         return
-    _ps("Get-NetAdapter | Where-Object {$_.Status -eq 'Up'} | "
-        f"Set-DnsClientServerAddress -ServerAddresses {addr}")
+    addrs = "'127.0.0.1'"
+    if LISTEN_V6:
+        addrs += ",'::1'"
+    _ps("Get-NetAdapter -Physical | Where-Object {$_.Status -eq 'Up'} | "
+        f"Set-DnsClientServerAddress -ServerAddresses ({addrs})")
 
 
 def reset_system_dns_all():
     if not IS_WINDOWS:
         return
-    _ps("Get-NetAdapter | Where-Object {$_.Status -eq 'Up'} | "
+    _ps("Get-NetAdapter -Physical | Where-Object {$_.Status -eq 'Up'} | "
         "Set-DnsClientServerAddress -ResetServerAddresses")
 
 
@@ -336,7 +380,7 @@ def dns_guard_loop(state):
     while True:
         if upstream_ok(state):
             fails = 0
-            set_system_dns_all("127.0.0.1")
+            set_system_dns_all()
             taken_over = True
         else:
             fails += 1
@@ -420,6 +464,13 @@ def main():
     server = DNSServer(resolver, port=args.port, address="127.0.0.1")
     print(f"[dns] listening on 127.0.0.1:{args.port}")
     server.start_thread()
+
+    # also listen on [::1] so IPv6 DNS can be pointed at us (closes the IPv6
+    # bypass on dual-stack machines); best-effort, IPv4 keeps working regardless
+    global LISTEN_V6
+    LISTEN_V6 = start_ipv6_resolver(resolver, args.port)
+    if LISTEN_V6:
+        print(f"[dns] also listening on [::1]:{args.port}")
 
     # start config poller
     threading.Thread(target=poll_loop,

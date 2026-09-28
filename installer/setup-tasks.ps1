@@ -38,10 +38,11 @@ $selftest = Join-Path $env:ProgramData "filter1\selftest.log"
 & $py -c "import mitmproxy; print('mitmproxy import ok')" *>> $selftest 2>&1
 "=== agent --once ===" | Out-File $selftest -Append
 & $py "$agent" --config "$cfg" --once *>> $selftest 2>&1
-# only enable the proxy layer if the agent could actually reach the server;
-# otherwise routing the browser through a dead proxy would cut it off
+# diagnostic only: whether the agent could reach the server at install time.
+# This no longer gates the proxy — a transient outage (or a corporate proxy in
+# front of the machine) at install time must not permanently disable the layer.
 $agentOk = ($LASTEXITCODE -eq 0)
-"agentOk=$agentOk" | Out-File $selftest -Append
+"agentOk=$agentOk (diagnostic only; does not gate the proxy)" | Out-File $selftest -Append
 
 # ============================ DNS AGENT ============================
 Stop-ScheduledTask -TaskName "filter1" -ErrorAction SilentlyContinue | Out-Null
@@ -85,54 +86,71 @@ foreach ($ap in $vpnApps) {
 }
 
 # ============================ PROXY (mitmproxy) ============================
-# Only enable the proxy layer if the agent proved it can reach the server. If
-# not, we must NOT route the browser through a proxy, or it would be cut off.
-if ($agentOk) {
-  New-Item -ItemType Directory -Force -Path $Conf | Out-Null
+# The proxy addon fails OPEN: if it can't reach the control server it lets all
+# traffic through, so routing the browser through it never cuts off browsing.
+# We therefore ALWAYS install and start the proxy, regardless of whether the
+# server happened to be reachable at install time. Browsers are only routed
+# through 127.0.0.1:8080 once the CA is trusted AND the proxy is actually
+# listening; otherwise HTTPS would break or the browser would hit a dead port.
+# run_proxy.py re-applies that routing on every boot, so it converges even if
+# the proxy was slow to come up during this install.
+New-Item -ItemType Directory -Force -Path $Conf | Out-Null
 
-  # 1. start the proxy task first — run_proxy.py generates the CA on first run.
-  #    Use python.exe (NOT pythonw): mitmdump needs a real stdout or it exits.
-  #    As a SYSTEM task in session 0 the console is never visible to the user.
-  Stop-ScheduledTask -TaskName "filter1-proxy" -ErrorAction SilentlyContinue | Out-Null
-  Get-Process mitmdump, python -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$InstallDir*" } | Stop-Process -Force -ErrorAction SilentlyContinue
-  $a2 = New-ScheduledTaskAction -Execute $py -Argument "`"$runProxy`""
-  $a2t = New-ScheduledTaskTrigger -AtStartup
-  Register-ScheduledTask -TaskName "filter1-proxy" -Action $a2 -Trigger $a2t -Principal $pr -Settings $st -Force | Out-Null
-  Start-ScheduledTask -TaskName "filter1-proxy"
+# 1. start the proxy task first — run_proxy.py generates the CA on first run.
+#    Use python.exe (NOT pythonw): mitmdump needs a real stdout or it exits.
+#    As a SYSTEM task in session 0 the console is never visible to the user.
+Stop-ScheduledTask -TaskName "filter1-proxy" -ErrorAction SilentlyContinue | Out-Null
+Get-Process mitmdump, python -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$InstallDir*" } | Stop-Process -Force -ErrorAction SilentlyContinue
+$a2 = New-ScheduledTaskAction -Execute $py -Argument "`"$runProxy`""
+$a2t = New-ScheduledTaskTrigger -AtStartup
+Register-ScheduledTask -TaskName "filter1-proxy" -Action $a2 -Trigger $a2t -Principal $pr -Settings $st -Force | Out-Null
+Start-ScheduledTask -TaskName "filter1-proxy"
 
-  # 2. wait for the root CA to be generated, then trust it machine-wide
-  $ca = $null
-  foreach ($i in 1..20) {
-    Start-Sleep -Seconds 1
-    foreach ($n in @("mitmproxy-ca-cert.cer","mitmproxy-ca-cert.pem")) {
-      $c = Join-Path $Conf $n
-      if (Test-Path $c) { $ca = $c; break }
-    }
-    if ($ca) { break }
+# 2. wait for the root CA to be generated, then trust it machine-wide
+$ca = $null
+foreach ($i in 1..30) {
+  Start-Sleep -Seconds 1
+  foreach ($n in @("mitmproxy-ca-cert.cer","mitmproxy-ca-cert.pem")) {
+    $c = Join-Path $Conf $n
+    if (Test-Path $c) { $ca = $c; break }
   }
-  if ($ca) {
-    Import-Certificate -FilePath $ca -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
-    NK "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\Certificates"
-    Set-ItemProperty "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\Certificates" -Name ImportEnterpriseRoots -Value 1 -Type DWord
-    "cert installed: $ca" | Out-File $selftest -Append
-  } else {
-    "WARNING: mitmproxy CA not generated; browser proxy policy NOT applied" | Out-File $selftest -Append
-  }
-
-  # 3. only route browsers through the proxy AFTER the CA is trusted
-  if ($ca) {
-    New-NetFirewallRule -DisplayName "filter1 block QUIC" -Group "filter1" -Direction Outbound -Action Block -Protocol UDP -RemotePort 443 -ErrorAction SilentlyContinue | Out-Null
-    foreach ($b in @("HKLM:\SOFTWARE\Policies\Google\Chrome","HKLM:\SOFTWARE\Policies\Microsoft\Edge")) {
-      New-Item -Path $b -Force | Out-Null
-      Set-ItemProperty -Path $b -Name QuicAllowed -Value 0 -Type DWord
-      Set-ItemProperty -Path $b -Name ProxyMode -Value "fixed_servers"
-      Set-ItemProperty -Path $b -Name ProxyServer -Value "127.0.0.1:8080"
-    }
-    Write-Host "filter1 installed: DNS agent + proxy running."
-  } else {
-    Write-Host "filter1 installed: DNS agent running; proxy started but cert missing."
-  }
+  if ($ca) { break }
+}
+if ($ca) {
+  Import-Certificate -FilePath $ca -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
+  NK "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\Certificates"
+  Set-ItemProperty "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\Certificates" -Name ImportEnterpriseRoots -Value 1 -Type DWord
+  "cert installed: $ca" | Out-File $selftest -Append
 } else {
-  "PROXY SKIPPED: agent could not reach the server (see errors above)." | Out-File $selftest -Append
-  Write-Host "filter1 installed: DNS agent only (proxy skipped - server unreachable)."
+  "WARNING: mitmproxy CA not generated; browser proxy policy NOT applied" | Out-File $selftest -Append
+}
+
+# 3. confirm the proxy is actually listening before routing the browser to it, so
+#    a slow or failed proxy start never leaves the browser pointed at a dead port.
+$proxyUp = $false
+foreach ($i in 1..30) {
+  try {
+    $tc = New-Object Net.Sockets.TcpClient
+    $tc.Connect("127.0.0.1", 8080)
+    if ($tc.Connected) { $proxyUp = $true; $tc.Close(); break }
+  } catch { }
+  Start-Sleep -Seconds 1
+}
+"proxyUp=$proxyUp" | Out-File $selftest -Append
+
+# 4. only route browsers through the proxy once the CA is trusted AND the proxy
+#    is listening. If not, leave browsing direct — everything is still installed,
+#    and run_proxy.py will apply the routing on the next boot once it comes up.
+if ($ca -and $proxyUp) {
+  New-NetFirewallRule -DisplayName "filter1 block QUIC" -Group "filter1" -Direction Outbound -Action Block -Protocol UDP -RemotePort 443 -ErrorAction SilentlyContinue | Out-Null
+  foreach ($b in @("HKLM:\SOFTWARE\Policies\Google\Chrome","HKLM:\SOFTWARE\Policies\Microsoft\Edge")) {
+    New-Item -Path $b -Force | Out-Null
+    Set-ItemProperty -Path $b -Name QuicAllowed -Value 0 -Type DWord
+    Set-ItemProperty -Path $b -Name ProxyMode -Value "fixed_servers"
+    Set-ItemProperty -Path $b -Name ProxyServer -Value "127.0.0.1:8080"
+  }
+  Write-Host "filter1 installed: DNS agent + proxy running."
+} else {
+  "PROXY NOT ROUTED YET: ca=$([bool]$ca) proxyUp=$proxyUp (tasks installed; run_proxy.py will route on next boot)" | Out-File $selftest -Append
+  Write-Host "filter1 installed: DNS agent running; proxy started (browser routing deferred to next boot)."
 }
