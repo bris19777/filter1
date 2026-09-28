@@ -8,4 +8,4 @@ COPY . .
 ENV FILTER1_DATA=/data
 EXPOSE 8080
 
-CMD ["gunicorn", "-b", "0.0.0.0:8080", "--timeout", "120", "app:app"]
+CMD ["gunicorn", "-b", "0.0.0.0:8080", "--timeout", "300", "app:app"]
