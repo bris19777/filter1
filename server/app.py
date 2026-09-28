@@ -283,14 +283,25 @@ def api_upload_installer():
     token = request.args.get("token") or request.headers.get("X-Agent-Token")
     if token != AGENT_TOKEN:
         return jsonify({"error": "unauthorized"}), 401
-    data = request.get_data()
-    if not data:
-        return jsonify({"error": "empty body"}), 400
+    # stream to disk in chunks instead of buffering the whole (tens-of-MB) file in
+    # memory, which can OOM a small machine and return 502.
     tmp = INSTALLER_PATH + ".tmp"
+    total = 0
     with open(tmp, "wb") as f:
-        f.write(data)
+        while True:
+            chunk = request.stream.read(1024 * 1024)
+            if not chunk:
+                break
+            f.write(chunk)
+            total += len(chunk)
+    if total == 0:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return jsonify({"error": "empty body"}), 400
     os.replace(tmp, INSTALLER_PATH)
-    return jsonify({"ok": True, "bytes": len(data)})
+    return jsonify({"ok": True, "bytes": total})
 
 
 @app.get("/download/filter1-setup.exe")
