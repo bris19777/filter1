@@ -19,6 +19,7 @@ and is managed by the machine's administrator (the parent).
 import argparse
 import os
 import platform
+import re
 import socket
 import ssl
 import subprocess
@@ -97,7 +98,12 @@ class State:
     """Thread-safe snapshot of the active policy."""
 
     def __init__(self, server_url):
-        self.server_url = server_url.rstrip("/")
+        # server_url may list several control-server URLs (comma/space/semicolon
+        # separated). The agent registers via whichever the network allows — so a
+        # blocked primary domain (e.g. an upstream "clean internet" filter such as
+        # Rimon blocking the host) can fail over to an alternate/whitelisted one.
+        self.server_urls = parse_servers(server_url)
+        self.server_url = self.server_urls[0] if self.server_urls else ""
         self.lock = threading.Lock()
         self.mode = "open"
         self.whitelist = set()
@@ -111,9 +117,12 @@ class State:
         self.last_poll_ok = False
         self.last_error = ""
         self.last_poll_ts = 0.0
-        # the control server's own host is always allowed so the agent can poll
-        host = urlparse(self.server_url).hostname
-        self.control_host = host.lower() if host else None
+        # every control server's host is always allowed so the agent can poll
+        self.control_hosts = set()
+        for u in self.server_urls:
+            h = urlparse(u).hostname
+            if h:
+                self.control_hosts.add(h.lower())
 
     def apply(self, cfg):
         mode = cfg.get("mode", "open")
@@ -145,7 +154,7 @@ class State:
             # fail-open: never block until we have a real config from the server
             if not self.have_config:
                 return True
-            if self.control_host and self._matches(name, {self.control_host}):
+            if self.control_hosts and self._matches(name, self.control_hosts):
                 return True
             # DNS layer disabled (proxy enforces): forward everything
             if self.layers == "proxy":
@@ -244,14 +253,25 @@ def start_ipv6_resolver(resolver, port):
         return False
 
 
-def config_url(state, token, device_id, name, count=None, amode=None):
+def parse_servers(raw):
+    """Split a raw server value into an ordered, de-duplicated list of base URLs.
+    Accepts comma / semicolon / whitespace separators."""
+    out = []
+    for p in re.split(r"[,;\s]+", (raw or "").strip()):
+        p = p.strip().strip("<>\"' \t\r\n").rstrip("/")
+        if p and p not in out:
+            out.append(p)
+    return out
+
+
+def config_url(base_url, token, device_id, name, count=None, amode=None):
     d = {"token": token, "device_id": device_id, "name": name}
     if count is not None:
         d["count"] = count
     if amode is not None:
         d["amode"] = amode
     q = urllib.parse.urlencode(d)
-    return f"{state.server_url}/api/config?{q}"
+    return f"{base_url}/api/config?{q}"
 
 
 def write_status(state, device_id, name):
@@ -264,6 +284,7 @@ def write_status(state, device_id, name):
             data = {
                 "time": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "server": state.server_url,
+                "servers": list(state.server_urls),
                 "device_id": device_id,
                 "name": name,
                 "server_reachable": state.last_poll_ok,
@@ -292,25 +313,35 @@ def poll_loop(state, token, device_id, name):
         # report the currently applied status so the panel can show readiness
         with state.lock:
             cnt, amode = len(state.blocked), state.mode
-        url = config_url(state, token, device_id, name, count=cnt, amode=amode)
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "filter1"})
-            with urllib.request.urlopen(req, timeout=15, context=SSL_CTX) as r:
-                import json
-                cfg = json.loads(r.read().decode("utf-8"))
-            state.apply(cfg)
-            with state.lock:
-                state.last_poll_ok = True
-                state.last_error = ""
-                state.last_poll_ts = time.time()
-            print(f"[poll] id={device_id} mode={state.mode} "
-                  f"whitelist={len(state.whitelist)} blocked={len(state.blocked)}")
-        except Exception as e:
+            servers = list(state.server_urls)
+        ok = False
+        last_err = "no control server configured"
+        for base in servers:
+            url = config_url(base, token, device_id, name, count=cnt, amode=amode)
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "filter1"})
+                with urllib.request.urlopen(req, timeout=15, context=SSL_CTX) as r:
+                    import json
+                    cfg = json.loads(r.read().decode("utf-8"))
+                state.apply(cfg)
+                with state.lock:
+                    state.server_url = base
+                    state.last_poll_ok = True
+                    state.last_error = ""
+                    state.last_poll_ts = time.time()
+                print(f"[poll] server={base} id={device_id} mode={state.mode} "
+                      f"whitelist={len(state.whitelist)} blocked={len(state.blocked)}")
+                ok = True
+                break
+            except Exception as e:
+                last_err = f"{base}: {e}"
+                print(f"[poll] {last_err}")
+        if not ok:
             with state.lock:
                 state.last_poll_ok = False
-                state.last_error = str(e)
+                state.last_error = last_err
                 state.last_poll_ts = time.time()
-            print(f"[poll] failed: {e}")
+            print(f"[poll] all control servers failed: {last_err}")
         write_status(state, device_id, name)
         time.sleep(POLL_SECONDS)
 
@@ -496,9 +527,19 @@ def main():
 
     if args.once:
         import json
-        url = config_url(state, args.token, device_id, name)
-        with urllib.request.urlopen(url, timeout=15, context=SSL_CTX) as r:
-            cfg = json.loads(r.read().decode("utf-8"))
+        cfg = None
+        for base in state.server_urls:
+            try:
+                url = config_url(base, args.token, device_id, name)
+                with urllib.request.urlopen(url, timeout=15, context=SSL_CTX) as r:
+                    cfg = json.loads(r.read().decode("utf-8"))
+                state.server_url = base
+                print("server:", base)
+                break
+            except Exception as e:
+                print(f"server {base} failed: {e}")
+        if cfg is None:
+            sys.exit("could not reach any control server")
         state.apply(cfg)
         print("mode:", state.mode)
         print("whitelist:", sorted(state.whitelist))

@@ -13,7 +13,7 @@
 [Setup]
 AppId={{B5D0F17A-11C2-4E8B-9E4A-F117E1000001}
 AppName=filter1
-AppVersion=1.1.5
+AppVersion=1.1.6
 AppPublisher=BSD
 DefaultDirName={commonpf}\filter1
 DisableDirPage=yes
@@ -45,6 +45,61 @@ Filename: "powershell.exe"; \
   Flags: runhidden; RunOnceId: "filter1removeall"
 
 [Code]
+// Registry key Inno writes its uninstall info under (AppId + "_is1"), used to
+// detect an existing install so the same setup file can also uninstall/upgrade.
+function UninstallKey(): String;
+begin
+  Result := 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{B5D0F17A-11C2-4E8B-9E4A-F117E1000001}_is1';
+end;
+
+// Run once at startup. If filter1 is already installed, offer to uninstall from
+// this very file (Yes), reinstall/upgrade in place (No), or cancel. Choosing
+// uninstall runs the existing uninstaller, which still enforces the parent code.
+function InitializeSetup(): Boolean;
+var
+  UninstStr: String;
+  ResultCode, Answer: Integer;
+begin
+  Result := True;
+  if RegQueryStringValue(HKLM, UninstallKey(), 'UninstallString', UninstStr) then
+  begin
+    Answer := MsgBox('filter1 כבר מותקן.' + #13#10#13#10 +
+      'Yes = הסרה' + #13#10 +
+      'No = התקנה מחדש / עדכון לגרסה זו' + #13#10 +
+      'Cancel = ביטול',
+      mbConfirmation, MB_YESNOCANCEL);
+    if Answer = IDYES then
+    begin
+      Exec(RemoveQuotes(UninstStr), '', '', SW_SHOW, ewWaitUntilTerminated, ResultCode);
+      Result := False;   // stop: we uninstalled instead of installing
+    end
+    else if Answer = IDCANCEL then
+      Result := False;
+    // IDNO falls through: proceed with an in-place upgrade
+  end;
+end;
+
+// Runs BEFORE any file is copied. Stop the running agent/proxy first, otherwise
+// the in-use bundled python.exe / mitmdump.exe would cause sharing violations
+// when upgrading over an existing install.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+  App, Cmd: String;
+begin
+  App := ExpandConstant('{app}');
+  Cmd := '-NoProfile -ExecutionPolicy Bypass -Command "' +
+    'Stop-ScheduledTask -TaskName filter1 -ErrorAction SilentlyContinue; ' +
+    'Stop-ScheduledTask -TaskName filter1-proxy -ErrorAction SilentlyContinue; ' +
+    'Get-Process python,pythonw,mitmdump -ErrorAction SilentlyContinue | ' +
+    'Where-Object { $_.Path -like ''' + App + '\*''' + ' } | ' +
+    'Stop-Process -Force -ErrorAction SilentlyContinue' +
+    '"';
+  Exec('powershell.exe', Cmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Sleep(1000);   // let file handles release before the copy starts
+  Result := '';
+end;
+
 // The code prompt + server verification is done by a bundled PowerShell script
 // (verify-uninstall.ps1) which exits 0 only when the code is valid. Uninstall
 // is aborted unless it returns 0.

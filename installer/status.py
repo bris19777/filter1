@@ -12,6 +12,7 @@ state). Double-click filter1-status.bat, or run:  py\\python.exe status.py
 
 import json
 import os
+import re
 import socket
 import ssl
 import subprocess
@@ -51,8 +52,17 @@ def find_cfg():
     return None
 
 
+def parse_servers(raw):
+    out = []
+    for p in re.split(r"[,;\s]+", (raw or "").strip()):
+        p = p.strip().strip("<>\"' \t\r\n").rstrip("/")
+        if p and p not in out:
+            out.append(p)
+    return out
+
+
 def read_cfg():
-    server = token = ""
+    servers, token = [], ""
     p = find_cfg()
     if p:
         try:
@@ -63,12 +73,12 @@ def read_cfg():
                         k, v = line.split("=", 1)
                         k, v = k.strip().lower(), v.strip().strip("<>\"' ")
                         if k == "server":
-                            server = v
+                            servers = parse_servers(v)
                         elif k == "token":
                             token = v
         except Exception:
             pass
-    return server, token, p
+    return servers, token, p
 
 
 def read_device_id():
@@ -99,22 +109,27 @@ def read_status_json():
         return None, None
 
 
-def check_server(server, token, device_id):
-    """Live re-check: does the control server answer the config request? A 200
-    means this device is registered/known to the server."""
-    if not server or not token:
-        return False, "אין server/token בקובץ ההגדרות"
-    q = urllib.parse.urlencode({"token": token,
-                                "device_id": device_id or "status",
-                                "name": socket.gethostname()})
-    url = f"{server.rstrip('/')}/api/config?{q}"
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "filter1-status"})
-        with urllib.request.urlopen(req, timeout=10, context=_ssl_context()) as r:
-            cfg = json.loads(r.read().decode("utf-8"))
-        return True, f"מצב מהשרת: {cfg.get('mode', '?')}"
-    except Exception as e:
-        return False, str(e)
+def check_server(servers, token, device_id):
+    """Live re-check: does any control server answer the config request? A 200
+    means this device is registered/known to that server. Returns
+    (ok, working_url, detail) — trying each server so a blocked primary can fail
+    over to a whitelisted alternate."""
+    if not servers or not token:
+        return False, "", "אין server/token בקובץ ההגדרות"
+    last = ""
+    for server in servers:
+        q = urllib.parse.urlencode({"token": token,
+                                    "device_id": device_id or "status",
+                                    "name": socket.gethostname()})
+        url = f"{server.rstrip('/')}/api/config?{q}"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "filter1-status"})
+            with urllib.request.urlopen(req, timeout=10, context=_ssl_context()) as r:
+                cfg = json.loads(r.read().decode("utf-8"))
+            return True, server, f"מצב מהשרת: {cfg.get('mode', '?')}"
+        except Exception as e:
+            last = f"{server}: {e}"
+    return False, "", last
 
 
 def ca_file():
@@ -173,9 +188,12 @@ def build_report():
     def add(s=""):
         lines.append(s)
 
-    server, token, cfg_path = read_cfg()
+    servers, token, cfg_path = read_cfg()
     device_id = read_device_id()
     st, age = read_status_json()
+    # if the cfg has no servers, fall back to what the agent recorded
+    if not servers and st:
+        servers = st.get("servers") or ([st.get("server")] if st.get("server") else [])
 
     add("=" * 56)
     add("            filter1 — מצב מקומי ואבחון")
@@ -184,9 +202,12 @@ def build_report():
     add()
 
     # --- config ---
-    if server and token:
-        add(f"{OK} הגדרות נמצאו: {cfg_path}")
-        add(f"       שרת: {server}")
+    if servers and token:
+        add(f"{OK} הגדרות נמצאו: {cfg_path or '(מתוך status.json)'}")
+        if len(servers) == 1:
+            add(f"       שרת: {servers[0]}")
+        else:
+            add(f"       שרתים (לפי סדר ניסיון): {', '.join(servers)}")
         add(f"       מזהה מחשב: {device_id or '(עדיין לא נוצר)'}")
     else:
         add(f"{BAD} קובץ ההגדרות (filter1.cfg) חסר או ללא server/token")
@@ -203,13 +224,17 @@ def build_report():
     add()
 
     # --- server registration (live) ---
-    reachable, detail = check_server(server, token, device_id)
+    reachable, working, detail = check_server(servers, token, device_id)
     if reachable:
         add(f"{OK} רישום בשרת: המכשיר מוכר לשרת ({detail})")
+        if len(servers) > 1:
+            add(f"       שרת פעיל: {working}")
     else:
         add(f"{BAD} רישום בשרת נכשל — לכן המחשב לא מופיע בלוח הבקרה")
         add(f"       סיבה: {detail}")
         add("       בדוק חיבור אינטרנט, כתובת השרת, והטוקן")
+        add("       אם רשת מסננת (כמו רימון) חוסמת את הדומיין — בקש לאשר אותו,")
+        add("       או הוסף כתובת שרת חלופית מאושרת ל-filter1.cfg (מופרדת בפסיק)")
     if st and st.get("last_error"):
         add(f"       שגיאת poll אחרונה של הסוכן: {st['last_error']}")
     add()
