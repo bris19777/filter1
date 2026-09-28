@@ -13,7 +13,7 @@
 [Setup]
 AppId={{B5D0F17A-11C2-4E8B-9E4A-F117E1000001}
 AppName=filter1
-AppVersion=1.1.7
+AppVersion=1.1.8
 AppPublisher=BSD
 DefaultDirName={commonpf}\filter1
 DisableDirPage=yes
@@ -63,6 +63,10 @@ begin
   Result := True;
   if RegQueryStringValue(HKLM, UninstallKey(), 'UninstallString', UninstStr) then
   begin
+    // Silent run (remote auto-update, /VERYSILENT): never prompt and never
+    // uninstall — just upgrade in place.
+    if WizardSilent then
+      Exit;
     Answer := MsgBox('filter1 כבר מותקן.' + #13#10#13#10 +
       'Yes = הסרה' + #13#10 +
       'No = התקנה מחדש / עדכון לגרסה זו' + #13#10 +
