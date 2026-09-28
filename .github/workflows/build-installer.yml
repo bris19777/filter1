@@ -41,6 +41,9 @@ jobs:
           # local status / diagnostics tool
           Copy-Item installer\status.py          installer\payload\
           Copy-Item installer\filter1-status.bat installer\payload\
+          # public code-signing cert for auto-update trust (only if the operator
+          # added it; needed for a self-signed signer, harmless otherwise)
+          if (Test-Path installer\codesign.cer) { Copy-Item installer\codesign.cer installer\payload\ }
           # bundle the VC++ runtime so the private Python starts on clean machines
           Invoke-WebRequest "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile installer\payload\vc_redist.x64.exe
 

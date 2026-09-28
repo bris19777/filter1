@@ -20,7 +20,7 @@ from functools import wraps
 from flask import (Flask, Response, jsonify, redirect, render_template_string,
                    request, session, url_for)
 
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.1.8"
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.environ.get("FILTER1_DATA", os.path.join(BASE, "data"))
@@ -57,6 +57,10 @@ DEFAULT_STORE = {
     "blocklists": DEFAULT_BLOCKLISTS,   # shared across all devices
     "devices": {},                      # device_id -> device record
     "uninstall_code": "",
+    # remote auto-update target advertised to agents. version: the latest agent
+    # version; url: where the signed installer is hosted; signer: the pinned
+    # code-signing certificate thumbprint the agent verifies before running it.
+    "update": {"version": "", "url": "", "signer": ""},
     "updated_at": 0,
 }
 
@@ -148,6 +152,7 @@ def api_config():
         dev["active_mode"] = amode
     save_store(st)
 
+    upd = st.get("update", {})
     return jsonify({
         "device_id": device_id,
         "mode": dev["mode"],
@@ -156,6 +161,9 @@ def api_config():
         "blacklist_manual": dev["blacklist_manual"],
         "blocklists": st["blocklists"],
         "uninstall_code": st["uninstall_code"],
+        "latest_version": upd.get("version", ""),
+        "update_url": upd.get("url", ""),
+        "update_signer": upd.get("signer", ""),
         "updated_at": st["updated_at"],
     })
 
@@ -329,7 +337,8 @@ def index():
         })
     return render_template_string(
         INDEX_HTML, devices=devices, version=APP_VERSION,
-        uninstall_code=st["uninstall_code"])
+        uninstall_code=st["uninstall_code"], update=st.get("update", {}),
+        agent_version=APP_VERSION)
 
 
 @app.get("/device/<device_id>")
@@ -423,6 +432,22 @@ def uninstall_code():
     return redirect(url_for("index"))
 
 
+@app.post("/update-target")
+@login_required
+def update_target():
+    """Set the remote auto-update target that agents poll. Empty version or url
+    disables auto-update. signer is the pinned code-signing cert thumbprint the
+    agent verifies before running the installer."""
+    st = load_store()
+    st["update"] = {
+        "version": (request.form.get("version") or "").strip(),
+        "url": (request.form.get("url") or "").strip(),
+        "signer": (request.form.get("signer") or "").strip().replace(":", "").replace(" ", ""),
+    }
+    save_store(st)
+    return redirect(url_for("index"))
+
+
 def human_ago(secs):
     if secs < 60:
         return f"לפני {secs} שניות"
@@ -511,6 +536,21 @@ INDEX_HTML = """<!doctype html><html dir="rtl" lang="he"><head>
   {% if uninstall_code %}<div class="code">{{uninstall_code}}</div>{% endif %}
   <form method="post" action="/uninstall-code" style="margin-top:8px">
    <button type="submit" class="gray">הפק קוד הסרה חדש</button></form>
+ </div>
+ <div class="box">
+  <h3>עדכון אוטומטי מרחוק</h3>
+  <p style="color:#94a3b8;font-size:13px">
+   הסוכנים בודקים גרסה בכל דקה. אם הגרסה כאן חדשה יותר, הם מורידים את המתקין,
+   מאמתים את חתימתו מול טביעת האצבע, ומעדכנים בשקט. השאר ריק כדי לכבות.
+   ללא טביעת אצבע העדכון לא ירוץ (הגנה).</p>
+  <form method="post" action="/update-target" style="margin-top:8px">
+   <input class="txt" name="version" value="{{update.get('version','')}}"
+     placeholder="גרסה אחרונה, למשל 1.1.8" style="margin-bottom:8px">
+   <input class="txt" name="url" value="{{update.get('url','')}}"
+     placeholder="כתובת המתקין החתום (https://.../filter1-setup.exe)" style="margin-bottom:8px">
+   <input class="txt" name="signer" value="{{update.get('signer','')}}"
+     placeholder="טביעת אצבע של תעודת החתימה (Thumbprint)" style="margin-bottom:8px">
+   <button type="submit" class="gray">שמור יעד עדכון</button></form>
  </div>
  <div class="v">גרסה {{version}}</div>
 </div></body></html>"""

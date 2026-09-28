@@ -50,6 +50,10 @@ try:
 except ImportError:
     sys.exit("Missing dependency. Run: pip install -r requirements.txt")
 
+# Bump on every release together with the installer's AppVersion. The control
+# server advertises the latest version; the agent self-updates when it is behind.
+AGENT_VERSION = "1.1.8"
+
 FALLBACK_UPSTREAMS = ["1.1.1.1", "8.8.8.8"]  # used only if we can't detect any
 POLL_SECONDS = 60          # how often to fetch config
 DNS_ASSERT_SECONDS = 30    # how often to re-assert / health-check the DNS setting
@@ -117,6 +121,11 @@ class State:
         self.last_poll_ok = False
         self.last_error = ""
         self.last_poll_ts = 0.0
+        # remote auto-update fields advertised by the server
+        self.latest_version = ""
+        self.update_url = ""
+        self.update_signer = ""     # pinned code-signing cert thumbprint (required)
+        self.update_state = ""
         # every control server's host is always allowed so the agent can poll
         self.control_hosts = set()
         for u in self.server_urls:
@@ -145,6 +154,9 @@ class State:
             self.whitelist = whitelist
             self.blocked = manual | downloaded
             self.blocklist_urls = urls
+            self.latest_version = (cfg.get("latest_version") or "").strip()
+            self.update_url = (cfg.get("update_url") or "").strip()
+            self.update_signer = (cfg.get("update_signer") or "").replace(":", "").replace(" ", "").strip().lower()
 
     def decision(self, qname):
         """Return True if the query should be allowed (forwarded upstream)."""
@@ -274,6 +286,90 @@ def config_url(base_url, token, device_id, name, count=None, amode=None):
     return f"{base_url}/api/config?{q}"
 
 
+def version_tuple(v):
+    """'1.2.10' -> (1, 2, 10); non-numeric parts ignored. Empty -> ()."""
+    return tuple(int(p) for p in re.findall(r"\d+", v or ""))
+
+
+# guards against re-downloading the same version in a tight loop
+_last_update_attempt = {"version": "", "ts": 0.0}
+
+
+def _set_update_state(state, s):
+    with state.lock:
+        state.update_state = s
+
+
+def verify_installer_signature(path, expected_thumbprint):
+    """Return (ok, detail). Requires a VALID Authenticode signature whose signing
+    certificate thumbprint matches the pinned value. Fails closed on any doubt."""
+    lp = path.replace("'", "''")
+    ps = (f"$s = Get-AuthenticodeSignature -LiteralPath '{lp}'; "
+          "if ($s.Status -ne 'Valid') { Write-Output ('status=' + $s.Status); exit 0 }; "
+          "Write-Output ('thumb=' + $s.SignerCertificate.Thumbprint)")
+    out = (_ps(ps) or "").strip().lower()
+    if "thumb=" not in out:
+        return False, (out or "no signature")
+    thumb = out.split("thumb=", 1)[1].strip().replace(":", "").replace(" ", "")
+    if thumb == expected_thumbprint:
+        return True, thumb
+    return False, f"thumbprint mismatch ({thumb})"
+
+
+def maybe_self_update(state):
+    """Remote auto-update: if the server advertises a newer version and a pinned
+    signer, download the installer, verify its Authenticode signature against the
+    pinned thumbprint, and run it silently. Fails closed: any missing pin or failed
+    verification skips the update and leaves the running agent untouched."""
+    if not IS_WINDOWS:
+        return
+    with state.lock:
+        latest = state.latest_version
+        url = state.update_url
+        signer = state.update_signer
+    if not url or not latest:
+        _set_update_state(state, f"no update configured (running {AGENT_VERSION})")
+        return
+    if version_tuple(latest) <= version_tuple(AGENT_VERSION):
+        _set_update_state(state, f"up-to-date ({AGENT_VERSION})")
+        return
+    if not signer:
+        _set_update_state(state, f"update {latest} available but no pinned signer; refusing")
+        print("[update] refusing: update_signer (cert thumbprint) is not set")
+        return
+    now = time.time()
+    if _last_update_attempt["version"] == latest and now - _last_update_attempt["ts"] < 1800:
+        return
+    _last_update_attempt["version"] = latest
+    _last_update_attempt["ts"] = now
+    safe_ver = re.sub(r"[^0-9.]", "", latest) or "new"
+    tmp = os.path.join(id_dir(), f"filter1-update-{safe_ver}.exe")
+    try:
+        _set_update_state(state, f"downloading {latest}")
+        req = urllib.request.Request(url, headers={"User-Agent": "filter1"})
+        with urllib.request.urlopen(req, timeout=180, context=SSL_CTX) as r, \
+                open(tmp, "wb") as f:
+            f.write(r.read())
+        ok, detail = verify_installer_signature(tmp, signer)
+        if not ok:
+            _set_update_state(state, f"update {latest} rejected: {detail}")
+            print(f"[update] signature check failed: {detail}")
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            return
+        _set_update_state(state, f"installing {latest}")
+        print(f"[update] verified {latest} (signer {detail}); launching silent installer")
+        # /VERYSILENT so the installer's existing in-place upgrade runs unattended;
+        # it stops our task, replaces files, and restarts the (new) agent.
+        subprocess.Popen([tmp, "/VERYSILENT", "/NORESTART", "/SUPPRESSMSGBOXES"],
+                         creationflags=CREATE_NO_WINDOW)
+    except Exception as e:
+        _set_update_state(state, f"update error: {e}")
+        print(f"[update] error: {e}")
+
+
 def write_status(state, device_id, name):
     """Persist a local snapshot of why the agent is or isn't working, so the
     status tool (and the parent) can see, e.g., that the mitmproxy cert exists
@@ -283,6 +379,9 @@ def write_status(state, device_id, name):
         with state.lock:
             data = {
                 "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "agent_version": AGENT_VERSION,
+                "latest_version": state.latest_version,
+                "update_state": state.update_state,
                 "server": state.server_url,
                 "servers": list(state.server_urls),
                 "device_id": device_id,
@@ -342,6 +441,8 @@ def poll_loop(state, token, device_id, name):
                 state.last_error = last_err
                 state.last_poll_ts = time.time()
             print(f"[poll] all control servers failed: {last_err}")
+        if ok:
+            maybe_self_update(state)
         write_status(state, device_id, name)
         time.sleep(POLL_SECONDS)
 

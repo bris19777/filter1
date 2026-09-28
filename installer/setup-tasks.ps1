@@ -21,6 +21,16 @@ function NK($p) { if (-not (Test-Path $p)) { New-Item -Path $p -Force | Out-Null
 $cfg = Join-Path $InstallDir "filter1.cfg"
 [System.IO.File]::WriteAllText($cfg, "server=$Server`ntoken=$Token")
 
+# ---- trust the code-signing certificate used for remote auto-update, if the
+#      operator bundled its public part (codesign.cer). Needed only for a
+#      self-signed signer so the agent's Authenticode check passes; a CA-issued
+#      cert validates without this. Public cert only — no private key here. ----
+$cs = Join-Path $InstallDir "codesign.cer"
+if (Test-Path $cs) {
+  Import-Certificate -FilePath $cs -CertStoreLocation Cert:\LocalMachine\TrustedPublisher -ErrorAction SilentlyContinue | Out-Null
+  Import-Certificate -FilePath $cs -CertStoreLocation Cert:\LocalMachine\Root -ErrorAction SilentlyContinue | Out-Null
+}
+
 # ---- ensure the Visual C++ runtime the bundled Python needs (clean machines
 #      often lack it, which would stop python.exe from starting at all) ----
 $vc = Join-Path $InstallDir "vc_redist.x64.exe"
