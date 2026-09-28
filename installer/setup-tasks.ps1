@@ -74,16 +74,12 @@ New-NetFirewallRule -DisplayName "filter1 block IKEv2" -Group "filter1" -Directi
 New-NetFirewallRule -DisplayName "filter1 block PPTP" -Group "filter1" -Direction Outbound -Action Block -Protocol TCP -RemotePort 1723 -ErrorAction SilentlyContinue | Out-Null
 New-NetFirewallRule -DisplayName "filter1 block L2TP" -Group "filter1" -Direction Outbound -Action Block -Protocol UDP -RemotePort 1701 -ErrorAction SilentlyContinue | Out-Null
 
-# block known VPN clients from running
-$vpnApps = @("ProtonVPN.exe","ProtonVPNService.exe","nordvpn.exe","NordVPN.exe",
-  "expressvpn.exe","ExpressVPN.exe","openvpn.exe","openvpn-gui.exe","wireguard.exe",
-  "tunnelbear.exe","Windscribe.exe","windscribe.exe","hola.exe","psiphon3.exe",
-  "hss.exe","HotspotShield.exe","surfshark.exe")
-$ifeo = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options"
-foreach ($ap in $vpnApps) {
-  New-Item -Path "$ifeo\$ap" -Force | Out-Null
-  Set-ItemProperty -Path "$ifeo\$ap" -Name "Debugger" -Value "$env:SystemRoot\System32\cmd.exe /c exit"
-}
+# NOTE: blocking VPN client executables by name via Image File Execution Options
+# used to run here, but that IFEO "Debugger" technique is a well-known malware
+# signature (MITRE T1546.012) that Windows Defender / SmartScreen frequently flag,
+# which was blocking the whole install on some machines. It is now an explicit,
+# admin-run opt-in (harden-apps.ps1 / harden-apps.bat) so the default install stays
+# AV-clean. The network-layer VPN blocking (firewall rules above) still applies.
 
 # ============================ PROXY (mitmproxy) ============================
 # The proxy addon fails OPEN: if it can't reach the control server it lets all
