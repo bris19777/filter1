@@ -18,7 +18,7 @@ import time
 from functools import wraps
 
 from flask import (Flask, Response, jsonify, redirect, render_template_string,
-                   request, session, url_for)
+                   request, send_file, session, url_for)
 
 APP_VERSION = "1.1.8"
 
@@ -26,6 +26,8 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.environ.get("FILTER1_DATA", os.path.join(BASE, "data"))
 os.makedirs(DATA_DIR, exist_ok=True)
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
+# the signed installer, uploaded by the parent and served to agents for auto-update
+INSTALLER_PATH = os.path.join(DATA_DIR, "filter1-setup.exe")
 
 PARENT_PASSWORD = os.environ.get("PARENT_PASSWORD", "changeme")
 AGENT_TOKEN = os.environ.get("AGENT_TOKEN", "DEV")
@@ -269,6 +271,38 @@ def serve_proxy_installer():
     base = "https://" + request.host   # Fly terminates TLS; force https for POSTs
     script = PROXY_INSTALLER_PS1.replace("__SERVER__", base).replace("__TOKEN__", token)
     return Response(script, mimetype="text/plain")
+
+
+@app.post("/api/upload-installer")
+def api_upload_installer():
+    """Parent uploads the signed installer here (stored on the /data volume):
+       curl -X POST "https://<server>/api/upload-installer?token=<TOKEN>" \\
+            --data-binary @filter1-setup.exe
+    Token-gated. The agent still verifies the Authenticode signature + pinned
+    thumbprint before running it, so a bad upload without the key is never run."""
+    token = request.args.get("token") or request.headers.get("X-Agent-Token")
+    if token != AGENT_TOKEN:
+        return jsonify({"error": "unauthorized"}), 401
+    data = request.get_data()
+    if not data:
+        return jsonify({"error": "empty body"}), 400
+    tmp = INSTALLER_PATH + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(data)
+    os.replace(tmp, INSTALLER_PATH)
+    return jsonify({"ok": True, "bytes": len(data)})
+
+
+@app.get("/download/filter1-setup.exe")
+def download_installer():
+    """Serve the uploaded installer to agents. Token-gated because the installer
+    embeds the agent token. Point the panel's update URL at this with ?token=."""
+    if request.args.get("token") != AGENT_TOKEN:
+        return "unauthorized", 401
+    if not os.path.exists(INSTALLER_PATH):
+        return "installer not uploaded yet", 404
+    return send_file(INSTALLER_PATH, mimetype="application/octet-stream",
+                     as_attachment=True, download_name="filter1-setup.exe")
 
 
 @app.get("/healthz")
