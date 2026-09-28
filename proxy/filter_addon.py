@@ -19,12 +19,25 @@ filter1 root certificate installed on those machines.
 
 import json
 import os
+import re
 import ssl
 import threading
 import time
 import urllib.parse
 import urllib.request
 from urllib.parse import urlparse
+
+
+def parse_servers(raw):
+    """Split a raw server value into an ordered, de-duplicated list of base URLs
+    (comma / semicolon / whitespace separated), so a blocked primary control-server
+    domain can fail over to an alternate/whitelisted one."""
+    out = []
+    for p in re.split(r"[,;\s]+", (raw or "").strip()):
+        p = p.strip().strip("<>\"' \t\r\n").rstrip("/")
+        if p and p not in out:
+            out.append(p)
+    return out
 
 from mitmproxy import http
 
@@ -103,10 +116,11 @@ class Policy:
         self._sig = None
         self._last_dl = 0
         self.have = False
+        self.servers = []
         self.server = ""
         self.token = ""
         self.device_id = "proxy"
-        self.control_host = ""
+        self.control_hosts = set()
         # batched activity (deduped within each flush window)
         self.ev_lock = threading.Lock()
         self.ev_blocked = set()
@@ -124,7 +138,7 @@ class Policy:
                             k = k.strip().lower()
                             v = v.strip().strip("<>\"' ")
                             if k == "server":
-                                self.server = v
+                                self.servers = parse_servers(v)
                             elif k == "token":
                                 self.token = v
             except Exception as e:
@@ -139,7 +153,9 @@ class Policy:
                     self.device_id = f.read().strip() or "proxy"
             except Exception:
                 self.device_id = "proxy"
-        self.control_host = (urlparse(self.server).hostname or "").lower()
+        self.server = self.servers[0] if self.servers else ""
+        self.control_hosts = {(urlparse(u).hostname or "").lower()
+                              for u in self.servers if urlparse(u).hostname}
 
     def _download_blocklists(self, urls):
         blocked = set()
@@ -167,38 +183,46 @@ class Policy:
 
     def poll_loop(self):
         while True:
-            try:
-                q = urllib.parse.urlencode({
-                    "token": self.token, "device_id": self.device_id,
-                    "name": "proxy"})
-                url = f"{self.server}/api/config?{q}"
-                with DIRECT.open(url, timeout=15) as r:
-                    cfg = json.loads(r.read().decode("utf-8"))
-                mode = cfg.get("mode", "open")
-                whitelist = {d.lower() for d in cfg.get("whitelist", [])}
-                manual = {d.lower() for d in cfg.get("blacklist_manual", [])}
-                urls = cfg.get("blocklists", [])
-                now = time.time()
-                sig = tuple(urls)
-                if mode == "blacklist" and (sig != self._sig or
-                                            now - self._last_dl > BLOCKLIST_REFRESH):
-                    self.downloaded = self._download_blocklists(urls)
-                    self._sig = sig
-                    self._last_dl = now
-                with self.lock:
-                    self.mode = mode
-                    self.layers = cfg.get("layers", "both")
-                    self.whitelist = whitelist
-                    self.manual = manual
-                    self.blocklist_urls = urls
-                    self.have = True
-                msg = (f"poll ok: mode={mode} layers={self.layers} "
-                       f"wl={len(whitelist)} blocked={len(manual) + len(self.downloaded)}")
-                print("[filter1]", msg)
-                log(msg)
-            except Exception as e:
-                print("[filter1] poll failed:", e)
-                log(f"poll failed: {e}")
+            q = urllib.parse.urlencode({
+                "token": self.token, "device_id": self.device_id,
+                "name": "proxy"})
+            ok = False
+            last_err = "no control server configured"
+            for base in list(self.servers):
+                try:
+                    url = f"{base}/api/config?{q}"
+                    with DIRECT.open(url, timeout=15) as r:
+                        cfg = json.loads(r.read().decode("utf-8"))
+                    mode = cfg.get("mode", "open")
+                    whitelist = {d.lower() for d in cfg.get("whitelist", [])}
+                    manual = {d.lower() for d in cfg.get("blacklist_manual", [])}
+                    urls = cfg.get("blocklists", [])
+                    now = time.time()
+                    sig = tuple(urls)
+                    if mode == "blacklist" and (sig != self._sig or
+                                                now - self._last_dl > BLOCKLIST_REFRESH):
+                        self.downloaded = self._download_blocklists(urls)
+                        self._sig = sig
+                        self._last_dl = now
+                    with self.lock:
+                        self.server = base
+                        self.mode = mode
+                        self.layers = cfg.get("layers", "both")
+                        self.whitelist = whitelist
+                        self.manual = manual
+                        self.blocklist_urls = urls
+                        self.have = True
+                    msg = (f"poll ok via {base}: mode={mode} layers={self.layers} "
+                           f"wl={len(whitelist)} blocked={len(manual) + len(self.downloaded)}")
+                    print("[filter1]", msg)
+                    log(msg)
+                    ok = True
+                    break
+                except Exception as e:
+                    last_err = f"{base}: {e}"
+            if not ok:
+                print("[filter1] poll failed:", last_err)
+                log(f"poll failed: {last_err}")
             time.sleep(POLL_SECONDS)
 
     @staticmethod
@@ -242,7 +266,7 @@ class Policy:
         with self.lock:
             if not self.have:          # fail-open until we have a real policy
                 return True
-            if self.control_host and self._match(host, {self.control_host}):
+            if self.control_hosts and self._match(host, self.control_hosts):
                 return True
             # proxy layer disabled (DNS enforces): pass everything through
             if self.layers == "dns":
@@ -272,8 +296,8 @@ BLOCK_HTML = (
 
 def load(loader):
     POLICY.load_local()
-    log(f"addon started: server={POLICY.server} device={POLICY.device_id} "
-        f"control_host={POLICY.control_host}")
+    log(f"addon started: servers={POLICY.servers} device={POLICY.device_id} "
+        f"control_hosts={sorted(POLICY.control_hosts)}")
     threading.Thread(target=POLICY.poll_loop, daemon=True).start()
     threading.Thread(target=POLICY.report_loop, daemon=True).start()
 
