@@ -49,7 +49,7 @@ class MainActivity : Activity() {
 
         root.addView(Button(this).apply {
             text = "הפעל הגנה"
-            setOnClickListener { onStart() }
+            setOnClickListener { startProtection() }
         })
         root.addView(Button(this).apply {
             text = "כבה הגנה"
@@ -63,7 +63,7 @@ class MainActivity : Activity() {
         refreshStatus()
     }
 
-    private fun onStart() {
+    private fun startProtection() {
         Prefs.setServer(this, serverField.text.toString())
         Prefs.setToken(this, tokenField.text.toString())
         val prepare = VpnService.prepare(this)
