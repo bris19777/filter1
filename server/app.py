@@ -129,6 +129,9 @@ DEVICE_DEFAULTS = {
     "blacklist_manual": [],
     "categories": [],   # enabled blocking-category keys (see CATEGORIES)
     "layers": "both",   # which layer enforces: dns | proxy | both
+    # per-device daily automatic lockdown at `hour` (Israel time); the device is
+    # switched to "lockdown" (full block) and stays that way until the parent opens it.
+    "auto_lockdown": {"enabled": True, "hour": 23, "last_applied": ""},
 }
 
 LAYERS = ("dns", "proxy", "both")
@@ -142,9 +145,6 @@ DEFAULT_STORE = {
     # version; url: where the signed installer is hosted; signer: the pinned
     # code-signing certificate thumbprint the agent verifies before running it.
     "update": {"version": "", "url": "", "signer": ""},
-    # daily automatic lockdown: at `hour` (Israel time) every device is switched
-    # to "lockdown" (full block), staying that way until the parent opens it.
-    "auto_lockdown": {"enabled": True, "hour": 23, "last_applied": ""},
     "updated_at": 0,
 }
 
@@ -170,31 +170,35 @@ def save_store(st):
     os.replace(tmp, CONFIG_PATH)
 
 
-def apply_daily_lockdown():
-    """Set every device to 'lockdown' (full block). Called once per day at the
-    configured Israel-time hour; devices stay locked until opened in the panel."""
-    st = load_store()
-    for dev in st["devices"].values():
-        dev["mode"] = "lockdown"
-    st.setdefault("auto_lockdown", dict(DEFAULT_STORE["auto_lockdown"]))
-    st["auto_lockdown"]["last_applied"] = datetime.now(ISRAEL_TZ).strftime("%Y-%m-%d")
-    save_store(st)
-    print(f"[auto-lockdown] locked {len(st['devices'])} device(s)")
-
-
 def auto_lockdown_loop():
-    """Every minute, check Israel local time; once per day, at/after the set hour,
-    lock all devices. zoneinfo handles Israel DST. Idempotent via last_applied."""
+    """Every minute, check Israel local time and lock each device whose own daily
+    auto-lockdown hour has arrived. Per device, once per day (idempotent via its
+    last_applied). zoneinfo handles Israel DST. A locked device stays in lockdown
+    until the parent opens it in the panel."""
     while True:
         try:
             st = load_store()
-            cfg = st.get("auto_lockdown") or {}
-            if cfg.get("enabled"):
-                now = datetime.now(ISRAEL_TZ)
-                today = now.strftime("%Y-%m-%d")
-                hour = int(cfg.get("hour", 23))
+            now = datetime.now(ISRAEL_TZ)
+            today = now.strftime("%Y-%m-%d")
+            changed = 0
+            for dev in st["devices"].values():
+                cfg = dev.get("auto_lockdown") or {}
+                if not cfg.get("enabled", True):
+                    continue
+                try:
+                    hour = int(cfg.get("hour", 23))
+                except (TypeError, ValueError):
+                    hour = 23
                 if now.hour >= hour and cfg.get("last_applied") != today:
-                    apply_daily_lockdown()
+                    dev["mode"] = "lockdown"
+                    cfg["hour"] = hour
+                    cfg["enabled"] = True
+                    cfg["last_applied"] = today
+                    dev["auto_lockdown"] = cfg
+                    changed += 1
+            if changed:
+                save_store(st)
+                print(f"[auto-lockdown] locked {changed} device(s)")
         except Exception as e:
             print(f"[auto-lockdown] error: {e}")
         time.sleep(60)
@@ -512,7 +516,7 @@ def index():
     return render_template_string(
         INDEX_HTML, devices=devices, version=APP_VERSION,
         uninstall_code=st["uninstall_code"], update=st.get("update", {}),
-        auto_lockdown=st.get("auto_lockdown", {}), agent_version=APP_VERSION)
+        agent_version=APP_VERSION)
 
 
 @app.get("/device/<device_id>")
@@ -529,6 +533,7 @@ def device(device_id):
         bl="\n".join(d.get("blacklist_manual", [])),
         blocklists="\n".join(st["blocklists"]),
         categories=CATEGORIES, enabled=set(d.get("categories", [])),
+        auto_lockdown=(d.get("auto_lockdown") or DEFAULT_STORE["auto_lockdown"]),
     )
 
 
@@ -552,6 +557,17 @@ def device_save(device_id):
     d["blacklist_manual"] = clean_domains(request.form.get("blacklist_manual"))
     d["categories"] = [k for k in CATEGORIES
                        if request.form.get("cat_" + k) == "on"]
+    cur_al = d.get("auto_lockdown") or dict(DEFAULT_STORE["auto_lockdown"])
+    try:
+        al_hour = max(0, min(23, int(request.form.get("auto_lockdown_hour",
+                                                      cur_al.get("hour", 23)))))
+    except (TypeError, ValueError):
+        al_hour = cur_al.get("hour", 23)
+    d["auto_lockdown"] = {
+        "enabled": request.form.get("auto_lockdown_enabled") == "on",
+        "hour": al_hour,
+        "last_applied": "",   # reset so a change can take effect today
+    }
     # blocklists are shared across devices
     st["blocklists"] = [l.strip() for l in
                         (request.form.get("blocklists") or "").splitlines()
@@ -620,25 +636,6 @@ def update_target():
         "version": (request.form.get("version") or "").strip(),
         "url": (request.form.get("url") or "").strip(),
         "signer": (request.form.get("signer") or "").strip().replace(":", "").replace(" ", ""),
-    }
-    save_store(st)
-    return redirect(url_for("index"))
-
-
-@app.post("/auto-lockdown")
-@login_required
-def auto_lockdown_save():
-    st = load_store()
-    cur = st.get("auto_lockdown") or dict(DEFAULT_STORE["auto_lockdown"])
-    try:
-        hour = max(0, min(23, int(request.form.get("hour", cur.get("hour", 23)))))
-    except (TypeError, ValueError):
-        hour = cur.get("hour", 23)
-    st["auto_lockdown"] = {
-        "enabled": request.form.get("enabled") == "on",
-        "hour": hour,
-        # reset so a change takes effect the next time the hour passes today
-        "last_applied": "",
     }
     save_store(st)
     return redirect(url_for("index"))
@@ -736,23 +733,6 @@ INDEX_HTML = """<!doctype html><html dir="rtl" lang="he"><head>
    <button type="submit" class="gray">הפק קוד הסרה חדש</button></form>
  </div>
  <div class="box">
-  <h3>חסימה אוטומטית יומית</h3>
-  <p style="color:#94a3b8;font-size:13px">
-   בשעה שנקבעת (שעון ישראל) כל המחשבים עוברים אוטומטית ל"חסימה מלאה", ונשארים כך
-   עד שתפתח ידנית כל מחשב בלוח הבקרה.</p>
-  <form method="post" action="/auto-lockdown" style="margin-top:8px">
-   <label style="display:block;margin-bottom:8px">
-    <input type="checkbox" name="enabled" {{'checked' if auto_lockdown.get('enabled') else ''}}>
-    הפעל חסימה אוטומטית יומית
-   </label>
-   <label>שעה (0–23):
-    <input class="txt" name="hour" value="{{auto_lockdown.get('hour', 23)}}"
-      style="width:80px;display:inline-block" inputmode="numeric">
-   </label>
-   <div style="margin-top:8px"><button type="submit" class="gray">שמור</button></div>
-  </form>
- </div>
- <div class="box">
   <h3>עדכון אוטומטי מרחוק</h3>
   <p style="color:#94a3b8;font-size:13px">
    הסוכנים בודקים גרסה בכל דקה. אם הגרסה כאן חדשה יותר, הם מורידים את המתקין,
@@ -812,6 +792,19 @@ DEVICE_HTML = """<!doctype html><html dir="rtl" lang="he"><head>
     {{c.label}}
    </label>
    {% endfor %}
+  </div>
+  <div class="field">
+   <h3>חסימה אוטומטית יומית</h3>
+   <p>בשעה שנקבעת (שעון ישראל) המחשב הזה עובר אוטומטית ל"חסימה מלאה", ונשאר כך
+      עד שתפתח אותו ידנית.</p>
+   <label class="cat">
+    <input type="checkbox" name="auto_lockdown_enabled" {{'checked' if auto_lockdown.get('enabled') else ''}}>
+    הפעל למחשב זה
+   </label>
+   <label>שעה (0–23):
+    <input class="txt" name="auto_lockdown_hour" value="{{auto_lockdown.get('hour', 23)}}"
+      style="width:80px;display:inline-block" inputmode="numeric">
+   </label>
   </div>
   <div class="field">
    <h3>חסימות ידניות נוספות</h3>
