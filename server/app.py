@@ -47,11 +47,87 @@ DEFAULT_BLOCKLISTS = [
     "https://raw.githubusercontent.com/Sinfonietta/hostfiles/master/pornography-hosts",
 ]
 
+# Curated blocking categories. Each is a set of the primary domains for that kind
+# of service (subdomains are matched automatically by the agent). Enabling a
+# category on a device adds its domains to that device's block list. Effective in
+# "blacklist" mode, alongside the public blocklists.
+CATEGORIES = {
+    "streaming": {
+        "label": "סטרימינג ווידאו ומוזיקה",
+        "domains": [
+            "youtube.com", "youtu.be", "googlevideo.com", "ytimg.com",
+            "youtubei.googleapis.com", "netflix.com", "nflxvideo.net",
+            "nflximg.net", "nflxext.com", "nflxso.net", "disneyplus.com",
+            "disney-plus.net", "dssott.com", "hulu.com", "hulustream.com",
+            "primevideo.com", "aiv-cdn.net", "aiv-delivery.net", "max.com",
+            "hbomax.com", "hbomaxcdn.com", "twitch.tv", "ttvnw.net", "jtvnw.net",
+            "vimeo.com", "vimeocdn.com", "dailymotion.com", "dmcdn.net",
+            "spotify.com", "scdn.co", "spotifycdn.com",
+        ],
+    },
+    "games": {
+        "label": "משחקי אונליין",
+        "domains": [
+            "roblox.com", "rbxcdn.com", "epicgames.com", "unrealengine.com",
+            "fortnite.com", "steampowered.com", "steamcommunity.com",
+            "steamstatic.com", "steamcontent.com", "ea.com", "origin.com",
+            "minecraft.net", "minecraftservices.com", "mojang.com",
+            "activision.com", "callofduty.com", "blizzard.com", "battle.net",
+            "riotgames.com", "leagueoflegends.com", "riotcdn.net", "xbox.com",
+            "xboxlive.com", "playstation.com", "playstation.net", "supercell.com",
+            "king.com", "miniclip.com", "poki.com", "crazygames.com", "y8.com",
+            "addictinggames.com", "kongregate.com",
+        ],
+    },
+    "social": {
+        "label": "רשתות חברתיות",
+        "domains": [
+            "facebook.com", "fbcdn.net", "facebook.net", "fb.com",
+            "instagram.com", "cdninstagram.com", "twitter.com", "x.com",
+            "twimg.com", "t.co", "snapchat.com", "sc-cdn.net", "snap.com",
+            "reddit.com", "redd.it", "redditmedia.com", "redditstatic.com",
+            "pinterest.com", "pinimg.com", "tumblr.com", "discord.com",
+            "discordapp.com", "discord.gg", "discordapp.net", "threads.net",
+            "linkedin.com", "licdn.com",
+        ],
+    },
+    "ads": {
+        "label": "פרסומות ומעקב",
+        "domains": [
+            "doubleclick.net", "googleadservices.com", "googlesyndication.com",
+            "google-analytics.com", "googletagmanager.com", "googletagservices.com",
+            "adservice.google.com", "2mdn.net", "scorecardresearch.com",
+            "criteo.com", "criteo.net", "taboola.com", "outbrain.com", "adnxs.com",
+            "adsrvr.org", "rubiconproject.com", "pubmatic.com", "openx.net",
+            "moatads.com", "quantserve.com", "bidswitch.net",
+        ],
+    },
+    "gambling": {
+        "label": "הימורים וקזינו",
+        "domains": [
+            "bet365.com", "pokerstars.com", "pokerstars.net", "888.com",
+            "888casino.com", "888poker.com", "williamhill.com", "betway.com",
+            "winner.com", "unibet.com", "bwin.com", "ladbrokes.com",
+            "partypoker.com", "draftkings.com", "fanduel.com", "stake.com",
+            "betfair.com", "casino.com",
+        ],
+    },
+    "shopping": {
+        "label": "קניות אונליין",
+        "domains": [
+            "amazon.com", "aliexpress.com", "ebay.com", "etsy.com", "walmart.com",
+            "shein.com", "temu.com", "wish.com", "asos.com", "terminalx.com",
+            "next.co.il", "ksp.co.il", "ivory.co.il", "zap.co.il",
+        ],
+    },
+}
+
 # The per-device policy. New devices are created from these defaults.
 DEVICE_DEFAULTS = {
     "mode": "open",
     "whitelist": [],
     "blacklist_manual": [],
+    "categories": [],   # enabled blocking-category keys (see CATEGORIES)
     "layers": "both",   # which layer enforces: dns | proxy | both
 }
 
@@ -198,13 +274,22 @@ def api_config():
         dev["active_mode"] = amode
     save_store(st)
 
+    # expand enabled categories into the manual block list the agent enforces, so
+    # no agent change is needed — categories ride along as extra blocked domains.
+    manual = list(dev.get("blacklist_manual", []))
+    for key in dev.get("categories", []):
+        cat = CATEGORIES.get(key)
+        if cat:
+            manual.extend(cat["domains"])
+    manual = list(dict.fromkeys(manual))  # de-dup, keep order
+
     upd = st.get("update", {})
     return jsonify({
         "device_id": device_id,
         "mode": dev["mode"],
         "layers": dev.get("layers", "both"),
         "whitelist": dev["whitelist"],
-        "blacklist_manual": dev["blacklist_manual"],
+        "blacklist_manual": manual,
         "blocklists": st["blocklists"],
         "uninstall_code": st["uninstall_code"],
         "latest_version": upd.get("version", ""),
@@ -443,6 +528,7 @@ def device(device_id):
         wl="\n".join(d.get("whitelist", [])),
         bl="\n".join(d.get("blacklist_manual", [])),
         blocklists="\n".join(st["blocklists"]),
+        categories=CATEGORIES, enabled=set(d.get("categories", [])),
     )
 
 
@@ -464,6 +550,8 @@ def device_save(device_id):
         d["layers"] = layer
     d["whitelist"] = clean_domains(request.form.get("whitelist"))
     d["blacklist_manual"] = clean_domains(request.form.get("blacklist_manual"))
+    d["categories"] = [k for k in CATEGORIES
+                       if request.form.get("cat_" + k) == "on"]
     # blocklists are shared across devices
     st["blocklists"] = [l.strip() for l in
                         (request.form.get("blocklists") or "").splitlines()
@@ -582,6 +670,8 @@ CSS = """
  .dev b{font-size:16px}
  .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-left:6px}
  .on{background:#22c55e}.off{background:#64748b}
+ .cat{display:block;margin:6px 0;font-size:15px}
+ .cat input{margin-left:8px;transform:scale(1.2)}
  .pill{font-size:12px;padding:3px 10px;border-radius:20px;background:#334155;color:#cbd5e1}
  .meta{color:#94a3b8;font-size:13px;margin-top:4px}
  .modes{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:16px 0}
@@ -712,6 +802,16 @@ DEVICE_HTML = """<!doctype html><html dir="rtl" lang="he"><head>
    <h3>רשימה לבנה (מותר)</h3>
    <p>דומיין בכל שורה. תמיד מותר במצב "חסימה מלאה" ו"רשימה לבנה".</p>
    <textarea name="whitelist" placeholder="example.com">{{wl}}</textarea>
+  </div>
+  <div class="field">
+   <h3>קטגוריות חסימה</h3>
+   <p>סמן קטגוריות לחסימה, בנוסף לרשימות הציבוריות. חל במצב "רשימה שחורה".</p>
+   {% for key, c in categories.items() %}
+   <label class="cat">
+    <input type="checkbox" name="cat_{{key}}" {{'checked' if key in enabled else ''}}>
+    {{c.label}}
+   </label>
+   {% endfor %}
   </div>
   <div class="field">
    <h3>חסימות ידניות נוספות</h3>
