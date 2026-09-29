@@ -120,6 +120,24 @@ CATEGORIES = {
             "next.co.il", "ksp.co.il", "ivory.co.il", "zap.co.il",
         ],
     },
+    "vpn": {
+        "label": "שרתי VPN וכלי עקיפה",
+        "domains": [
+            "nordvpn.com", "expressvpn.com", "surfshark.com", "protonvpn.com",
+            "protonvpn.net", "protonvpn.ch", "cyberghostvpn.com",
+            "privateinternetaccess.com", "windscribe.com", "tunnelbear.com",
+            "hotspotshield.com", "hola.org", "hola.com", "purevpn.com",
+            "ipvanish.com", "mullvad.net", "vyprvpn.com", "goldenfrog.com",
+            "atlasvpn.com", "hide.me", "zenmate.com", "betternet.co",
+            "psiphon.ca", "psiphon3.com", "ultrasurf.us", "turbovpn.com",
+            "urban-vpn.com", "speedify.com", "strongvpn.com", "torguard.net",
+            "astrill.com", "keepsolid.com", "vpnunlimited.com", "browsec.com",
+            "vpnbook.com", "hidemyass.com", "hma.com", "privatevpn.com",
+            "ivpn.net", "perfect-privacy.com", "getlantern.org", "lantern.io",
+            "shadowsocks.org", "getoutline.org", "torproject.org", "xvpn.io",
+            "fastvpn.com", "hoxx.com", "zoogvpn.com", "vpngate.net",
+        ],
+    },
 }
 
 # The per-device policy. New devices are created from these defaults.
