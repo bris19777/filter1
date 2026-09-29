@@ -21,6 +21,8 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: ''   # skip the obsolete "tools" package (its install fails); we install what we need below
 
       - name: Install SDK packages
         run: |
