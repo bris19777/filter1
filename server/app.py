@@ -533,7 +533,7 @@ def device(device_id):
         bl="\n".join(d.get("blacklist_manual", [])),
         blocklists="\n".join(st["blocklists"]),
         categories=CATEGORIES, enabled=set(d.get("categories", [])),
-        auto_lockdown=(d.get("auto_lockdown") or DEFAULT_STORE["auto_lockdown"]),
+        auto_lockdown=(d.get("auto_lockdown") or DEVICE_DEFAULTS["auto_lockdown"]),
     )
 
 
@@ -557,7 +557,7 @@ def device_save(device_id):
     d["blacklist_manual"] = clean_domains(request.form.get("blacklist_manual"))
     d["categories"] = [k for k in CATEGORIES
                        if request.form.get("cat_" + k) == "on"]
-    cur_al = d.get("auto_lockdown") or dict(DEFAULT_STORE["auto_lockdown"])
+    cur_al = d.get("auto_lockdown") or dict(DEVICE_DEFAULTS["auto_lockdown"])
     try:
         al_hour = max(0, min(23, int(request.form.get("auto_lockdown_hour",
                                                       cur_al.get("hour", 23)))))
