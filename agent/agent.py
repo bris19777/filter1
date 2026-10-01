@@ -52,12 +52,15 @@ except ImportError:
 
 # Bump on every release together with the installer's AppVersion. The control
 # server advertises the latest version; the agent self-updates when it is behind.
-AGENT_VERSION = "1.1.8"
+AGENT_VERSION = "1.1.9"
 
 FALLBACK_UPSTREAMS = ["1.1.1.1", "8.8.8.8"]  # used only if we can't detect any
 POLL_SECONDS = 60          # how often to fetch config
 DNS_ASSERT_SECONDS = 30    # how often to re-assert / health-check the DNS setting
 BLOCK_IP = "0.0.0.0"
+# Remote-support server (MeshCentral). Always resolved, in every mode, so the
+# technician's support agent stays connected even in lockdown/whitelist.
+ALWAYS_ALLOW = {"rmm.bsd-comp.com"}
 IS_WINDOWS = platform.system() == "Windows"
 
 
@@ -126,8 +129,9 @@ class State:
         self.update_url = ""
         self.update_signer = ""     # pinned code-signing cert thumbprint (required)
         self.update_state = ""
-        # every control server's host is always allowed so the agent can poll
-        self.control_hosts = set()
+        # every control server's host is always allowed so the agent can poll,
+        # plus the remote-support server so the technician never loses access
+        self.control_hosts = set(ALWAYS_ALLOW)
         for u in self.server_urls:
             h = urlparse(u).hostname
             if h:
