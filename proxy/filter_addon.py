@@ -42,6 +42,8 @@ def parse_servers(raw):
 from mitmproxy import http
 
 POLL_SECONDS = 60
+# Remote-support server (MeshCentral): never filtered, in every mode.
+ALWAYS_ALLOW = {"rmm.bsd-comp.com"}
 BLOCKLIST_REFRESH = 3600  # re-download public blocklists at most this often
 FLUSH_SECONDS = 20        # how often to send batched activity to the server
 
@@ -156,6 +158,7 @@ class Policy:
         self.server = self.servers[0] if self.servers else ""
         self.control_hosts = {(urlparse(u).hostname or "").lower()
                               for u in self.servers if urlparse(u).hostname}
+        self.control_hosts |= ALWAYS_ALLOW
 
     def _download_blocklists(self, urls):
         blocked = set()

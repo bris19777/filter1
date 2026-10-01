@@ -24,11 +24,19 @@ $allow = @(
 
 # the filter1 agent (needs DNS forwarding + HTTPS to the control server)
 $allow += @(
+  "${env:ProgramFiles}\filter1\py\pythonw.exe",
+  "${env:ProgramFiles}\filter1\py\python.exe",
   "$env:LOCALAPPDATA\Programs\Python\Python312\pythonw.exe",
   "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
   "C:\Program Files\Python312\pythonw.exe",
   "C:\Program Files\Python312\python.exe"
 ) | Where-Object { Test-Path $_ }
+
+# the remote-support agent (MeshCentral), wherever it is installed, so the
+# technician keeps access after the lockdown is on
+$allow += Get-CimInstance Win32_Service |
+  Where-Object { $_.Name -in @("BSDSupportAgent", "Mesh Agent") } |
+  ForEach-Object { $_.PathName.Trim().Trim('"') } | Where-Object { Test-Path $_ }
 
 # approved browsers
 $allow += @(
