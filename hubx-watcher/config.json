@@ -1,0 +1,43 @@
+{
+  "shipping_usd": 50,
+  "vat": 0.18,
+  "fallback_usd_ils": 3.1,
+  "price_drop_alert_pct": 5,
+  "realert_after_days": 7,
+  "first_run_max_rows": 40,
+  "rules": [
+    {
+      "name": "ThinkPad",
+      "keywords": ["ThinkPad"],
+      "sale_price_ils": 2500,
+      "min_profit_ils": 500,
+      "min_cpu_gen": 10,
+      "min_ram_gb": 16
+    },
+    {
+      "name": "מסך מגע",
+      "category": "laptops",
+      "require_touch": true,
+      "sale_price_ils": 2300,
+      "min_profit_ils": 500,
+      "min_cpu_gen": 10,
+      "min_ram_gb": 8
+    },
+    {
+      "name": "נייד 2,000 ₪",
+      "category": "laptops",
+      "sale_price_ils": 2000,
+      "min_profit_ils": 500,
+      "min_cpu_gen": 11,
+      "min_ram_gb": 8
+    },
+    {
+      "name": "נייח 2,000 ₪",
+      "category": "desktops",
+      "sale_price_ils": 2000,
+      "min_profit_ils": 500,
+      "min_cpu_gen": 10,
+      "min_ram_gb": 16
+    }
+  ]
+}
