@@ -1,0 +1,17 @@
+# Deploy from this directory:  fly launch --no-deploy --copy-config && fly deploy
+app = "hubx-watcher"
+primary_region = "fra"
+
+[build]
+
+[env]
+  INTERVAL_HOURS = "3"
+  WATCHER_STATE = "/data/state.json"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
+
+[mounts]
+  source = "hubx_watcher_data"
+  destination = "/data"
