@@ -511,11 +511,12 @@ powershell -nop -ep bypass -c "$s=Get-AuthenticodeSignature -LiteralPath $env:_v
 exit /b %errorlevel%
 
 :Scrub
+if not exist "%BASE%Scrubber\RunScrubber.ps1" set "SCRUB=%BASE%Scrubber\RunScrubber.ps1"
 if not exist "%SCRUB%" (
     echo   ERROR: the "Scrubber" folder is missing next to this file.
     exit /b 1
 )
-call "%SCRUB%" %* -qedit
+powershell -nop -ep bypass -File "%BASE%Scrubber\RunScrubber.ps1" %*
 title Office Setup Tool
 color 1F
 exit /b 0

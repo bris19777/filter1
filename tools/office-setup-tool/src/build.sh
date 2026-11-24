@@ -6,7 +6,7 @@ cd "$(dirname "$0")"
 SCR="${1:-../Scrubber}"
 x86_64-w64-mingw32-windres -O res app.rc -o app.res
 RES=""
-for f in "$SCR"/OfficeScrubber.cmd "$SCR"/bin/*; do
+for f in "$SCR"/OfficeScrubber.cmd "$SCR"/RunScrubber.ps1 "$SCR"/bin/*; do
   rel="Scrubber/${f#$SCR/}"
   RES="$RES -resource:$f,$rel"
 done

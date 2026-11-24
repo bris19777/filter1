@@ -413,13 +413,13 @@ if exist "!_file!" (
 echo.
 echo Executing OfficeClickToRun.exe . . .
 %_Nul3% call :CloseC2R
-%_Nul3% start "" /WAIT "!_file!" platform=%_plat% productstoremove=AllProducts displaylevel=False
+call :RunC2R "!_file!"
 )
 if exist "!_fil2!" if /i "%PROCESSOR_ARCHITECTURE%"=="arm64" (
 echo.
 echo Executing OfficeClickToRun.exe . . .
 %_Nul3% call :CloseC2R
-%_Nul3% start "" /WAIT "!_fil2!" platform=%_plat% productstoremove=AllProducts displaylevel=False
+call :RunC2R "!_fil2!"
 )
 echo.
 echo Scrubbing Office C2R . . .
@@ -427,6 +427,17 @@ if %_O15CTR% EQU 1 (call :cKpp 15 16 19 21 24) else (call :cKpp 16 19 21 24)
 %_cscript% bin\OffScrubC2R.vbs ALL /OFFLINE
 %_Nul3% call :vNextDir
 %_Nul3% call :officeREG 16
+goto :eof
+
+:RunC2R
+echo [Fast] Silent Microsoft uninstall - can take up to 15 minutes, please wait.
+if %_pwsh% EQU 0 (
+%_Nul3% start "" /WAIT "%~1" platform=%_plat% productstoremove=AllProducts displaylevel=False
+goto :eof
+)
+set "_c2rexe=%~1"
+set "_c2rarg=platform=%_plat% productstoremove=AllProducts displaylevel=False"
+%_Nul3% %_psc% "$p=Start-Process -FilePath $env:_c2rexe -ArgumentList $env:_c2rarg -PassThru; if (-not $p.WaitForExit(900000)) { try { $p.Kill() } catch {} }"
 goto :eof
 
 :CloseC2R

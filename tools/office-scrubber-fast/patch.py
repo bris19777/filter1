@@ -236,6 +236,28 @@ def patch_cmd(text):
                   'findstr /i /b /l /c:"\\"%%#.exe\\"" "%_tl%" && taskkill /t /f /IM %%#.exe\r\n)\r\n'
                   'del /f /q "%_tl%"\r\n',
                   "CloseC2R kill loop")
+    # C2R uninstall: silent and can hang -> wait at most 15 minutes, then
+    # continue (OffScrubC2R.vbs removes whatever is left anyway).
+    for var in ("_file", "_fil2"):
+        t = rep_exact(t,
+                      '%_Nul3% start "" /WAIT "!' + var + '!" platform=%_plat% productstoremove=AllProducts displaylevel=False\r\n',
+                      'call :RunC2R "!' + var + '!"\r\n',
+                      "C2R uninstall " + var)
+    t = rep_exact(t, "\r\n:CloseC2R\r\nnet stop OfficeSvc /y\r\n",
+                  "\r\n:RunC2R\r\n"
+                  "echo [Fast] Silent Microsoft uninstall - can take up to 15 minutes, please wait.\r\n"
+                  "if %_pwsh% EQU 0 (\r\n"
+                  "%_Nul3% start \"\" /WAIT \"%~1\" platform=%_plat% productstoremove=AllProducts displaylevel=False\r\n"
+                  "goto :eof\r\n"
+                  ")\r\n"
+                  "set \"_c2rexe=%~1\"\r\n"
+                  "set \"_c2rarg=platform=%_plat% productstoremove=AllProducts displaylevel=False\"\r\n"
+                  "%_Nul3% %_psc% \"$p=Start-Process -FilePath $env:_c2rexe -ArgumentList $env:_c2rarg -PassThru; "
+                  "if (-not $p.WaitForExit(900000)) { try { $p.Kill() } catch {} }\"\r\n"
+                  "goto :eof\r\n"
+                  "\r\n"
+                  ":CloseC2R\r\nnet stop OfficeSvc /y\r\n",
+                  "RunC2R label")
     return t
 
 

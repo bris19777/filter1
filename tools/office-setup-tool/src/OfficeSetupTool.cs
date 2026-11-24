@@ -229,9 +229,12 @@ namespace OfficeSetupTool
         public bool Scrub(string args)
         {
             string cmd = ScrubberPath();
-            Log("מסיר את Office... (ההתקדמות מוצגת בחלון השחור)");
-            var psi = new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "cmd.exe"),
-                "/c \"\"" + cmd + "\" " + args + " -qedit\"");
+            string runner = Path.Combine(Path.GetDirectoryName(cmd), "RunScrubber.ps1");
+            if (!File.Exists(runner)) throw new Exception("RunScrubber.ps1 חסר.");
+            Log("מסיר את Office... (ההתקדמות מוצגת בחלון הכחול. אין צורך ללחוץ בתוכו)");
+            // RunScrubber.ps1 turns QuickEdit off, so a click cannot freeze the window
+            var psi = new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, @"WindowsPowerShell\v1.0\powershell.exe"),
+                "-NoProfile -ExecutionPolicy Bypass -File \"" + runner + "\" " + args);
             psi.UseShellExecute = false;
             psi.WorkingDirectory = Path.GetDirectoryName(cmd);
             using (var p = Process.Start(psi)) p.WaitForExit();
