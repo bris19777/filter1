@@ -3,8 +3,12 @@
  * The actual disk work is done by an embedded PowerShell script (extend-c.ps1).
  * Build: see build.sh
  */
+#ifndef UNICODE
 #define UNICODE
+#endif
+#ifndef _UNICODE
 #define _UNICODE
+#endif
 #include <windows.h>
 #include <stdio.h>
 #include <wchar.h>
